@@ -3,6 +3,7 @@ Firebase ID token verification middleware for FastAPI.
 Usage as a dependency: current_user = Depends(get_current_user)
 """
 
+import json
 import os
 
 import firebase_admin
@@ -19,18 +20,35 @@ def _init_firebase():
     if _firebase_initialized or firebase_admin._apps:
         _firebase_initialized = True
         return
+
+    # 1. Raw JSON string in environment variable (Ideal for Render / production)
+    sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        try:
+            cert_dict = json.loads(sa_json)
+            cred = credentials.Certificate(cert_dict)
+            firebase_admin.initialize_app(cred)
+            _firebase_initialized = True
+            return
+        except Exception as e:
+            print(f"[FirebaseAuth] Failed parsing FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
+
+    # 2. Local service account file path
     sa_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "./serviceAccountKey.json")
     if os.path.exists(sa_path):
         cred = credentials.Certificate(sa_path)
-    else:
-        # Fallback: initialize with project ID only (limited verification)
-        project_id = os.getenv("FIREBASE_PROJECT_ID")
-        if not project_id:
-            raise RuntimeError(
-                "Firebase not configured. Set FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_PROJECT_ID."
-            )
+        firebase_admin.initialize_app(cred)
+        _firebase_initialized = True
+        return
+
+    # 3. Fallback: initialize with project ID options directly
+    project_id = os.getenv("FIREBASE_PROJECT_ID", "vetra-2c756")
+    try:
         cred = credentials.ApplicationDefault()
-    firebase_admin.initialize_app(cred)
+        firebase_admin.initialize_app(cred, {"projectId": project_id})
+    except Exception:
+        firebase_admin.initialize_app(options={"projectId": project_id})
+
     _firebase_initialized = True
 
 
