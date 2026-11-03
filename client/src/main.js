@@ -16,6 +16,8 @@ import {
   getSummaries,
   searchEmails,
   getKnowledgeGraph,
+  getGraphAnalytics,
+  askGraph,
   rebuildKnowledgeGraph,
   deleteSummary,
   getActivityLogs,
@@ -466,10 +468,10 @@ if (modalScheduleBtn) {
 
     openCalendarModal({
       id: '',
-      title: '',
+      title: emailToSchedule.subject || '',
       date: detectedDateStr,
       time: '10:00',
-      category: 'meeting',
+      category: inferEventCategory(textToScan),
       description: '',
       notifyBefore: 15
     });
@@ -715,11 +717,139 @@ async function loadGraph() {
   }
   try {
     idToken = await currentUser.getIdToken();
-    const graphData = await getKnowledgeGraph(idToken);
-    graphVisualizer.setData(graphData.nodes || [], graphData.edges || []);
+    const analytics = await getGraphAnalytics(idToken);
+    
+    // Set nodes, edges, and anomalies into force-directed visualizer engine
+    graphVisualizer.setData(analytics.nodes || [], analytics.edges || [], analytics.anomalies || []);
+
+    // Render PageRank Leaderboard
+    renderPageRankLeaderboard(analytics.top_entities || []);
+
+    // Render Risk Anomalies
+    renderGraphAnomalies(analytics.anomalies || []);
+
   } catch (err) {
     showToast(err.message || 'Failed to load Knowledge Graph', 'error');
   }
+}
+
+function renderPageRankLeaderboard(topEntities) {
+  const container = document.getElementById('pagerank-leaderboard-list');
+  if (!container) return;
+
+  if (!topEntities || topEntities.length === 0) {
+    container.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">No centrality metrics calculated.</div>';
+    return;
+  }
+
+  const icons = { sender: '👤', email: '✉️', organization: '🏢', topic: '🏷️', action_item: '⚡' };
+  
+  container.innerHTML = topEntities.map((e) => {
+    const icon = icons[e.type] || '📌';
+    const percent = Math.round((e.pagerank || 0.2) * 100);
+    return `
+      <div class="pagerank-item" data-node-id="${e.id}" style="padding:8px 10px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.15s ease;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <span style="font-size:12.5px; font-weight:600; color:var(--text-primary); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:170px;">
+            ${icon} ${e.label}
+          </span>
+          <span style="font-size:11px; font-weight:700; color:var(--accent-primary);">${e.pagerank}</span>
+        </div>
+        <div style="height:4px; width:100%; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;">
+          <div style="height:100%; width:${percent}%; background:var(--accent-primary);"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.pagerank-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const nodeId = item.dataset.nodeId;
+      if (graphVisualizer) graphVisualizer.panToNode(nodeId);
+    });
+  });
+}
+
+function renderGraphAnomalies(anomalies) {
+  const container = document.getElementById('anomalies-list');
+  const countBadge = document.getElementById('anomalies-count-badge');
+  if (countBadge) countBadge.textContent = anomalies ? anomalies.length : 0;
+  if (!container) return;
+
+  if (!anomalies || anomalies.length === 0) {
+    container.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">No structural risks detected.</div>';
+    return;
+  }
+
+  container.innerHTML = anomalies.map((a) => {
+    const isHigh = a.severity === 'HIGH';
+    const badgeColor = isHigh ? '#ef4444' : '#f59e0b';
+    return `
+      <div class="anomaly-card" style="padding:10px; background:rgba(239, 68, 68, 0.04); border:1px solid rgba(239, 68, 68, 0.2); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:4px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:12px; font-weight:700; color:var(--text-primary); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:180px;">⚠️ ${a.title}</span>
+          <span style="font-size:9.5px; font-weight:700; background:${badgeColor}; color:#fff; padding:1px 5px; border-radius:3px;">${a.severity}</span>
+        </div>
+        <div style="font-size:11.5px; color:var(--text-secondary); line-height:1.4;">${a.description}</div>
+        <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+          <button class="focus-anomaly-btn btn btn-ghost btn-sm" data-target-id="${a.target_node_id}" style="padding:2px 6px; font-size:11px; color:var(--accent-primary);">🎯 Focus in Graph</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.focus-anomaly-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.targetId;
+      if (graphVisualizer && targetId) graphVisualizer.panToNode(targetId);
+    });
+  });
+}
+
+// ── Ask the Graph AI Handlers ──────────────────────────────────────────────────
+const askGraphInput = document.getElementById('ask-graph-input');
+const askGraphBtn = document.getElementById('ask-graph-btn');
+const askGraphResponseBox = document.getElementById('ask-graph-response-box');
+const askGraphResponseText = document.getElementById('ask-graph-response-text');
+const closeAskGraphResponseBtn = document.getElementById('close-ask-graph-response-btn');
+
+async function handleAskGraph() {
+  if (!askGraphInput) return;
+  const query = askGraphInput.value.trim();
+  if (!query) {
+    showToast('Please type a question to ask the Knowledge Graph.', 'warning');
+    return;
+  }
+
+  setLoading(askGraphBtn, true, '✦ Analyzing…');
+  try {
+    idToken = await currentUser.getIdToken();
+    const res = await askGraph(query, idToken);
+
+    if (askGraphResponseBox && askGraphResponseText) {
+      askGraphResponseText.textContent = res.answer || 'No answer generated by graph AI.';
+      askGraphResponseBox.classList.remove('hidden');
+    }
+  } catch (err) {
+    showToast(err.message || 'Failed to query graph AI', 'error');
+  } finally {
+    setLoading(askGraphBtn, false, '✦ Ask AI');
+  }
+}
+
+if (askGraphBtn) askGraphBtn.addEventListener('click', handleAskGraph);
+if (askGraphInput) {
+  askGraphInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAskGraph();
+    }
+  });
+}
+if (closeAskGraphResponseBtn && askGraphResponseBox) {
+  closeAskGraphResponseBtn.addEventListener('click', () => {
+    askGraphResponseBox.classList.add('hidden');
+  });
 }
 
 function handleNodeSelect(node) {
@@ -813,6 +943,7 @@ if (rebuildGraphBtn) {
     }
   });
 }
+
 
 // Extract email fetching logic to a reusable function
 async function performEmailFetch(silent = false) {
@@ -2125,6 +2256,16 @@ function closeCalendarModal() {
 if (closeCalendarModalBtn) closeCalendarModalBtn.addEventListener('click', closeCalendarModal);
 if (calendarCancelEventBtn) calendarCancelEventBtn.addEventListener('click', closeCalendarModal);
 
+function inferEventCategory(text) {
+  if (!text) return 'general';
+  const t = text.toLowerCase();
+  if (/(strategy|planning|roadmap|brainstorm)/.test(t)) return 'strategy';
+  if (/(due|deadline|submit|urgent|timeline)/.test(t)) return 'deadline';
+  if (/(meet|zoom|call|discuss|sync|catch up)/.test(t)) return 'meeting';
+  if (/(follow up|check in|touch base)/.test(t)) return 'followup';
+  return 'general';
+}
+
 // Parse raw email text for meetings, dates, and action items
 function parseTargetDateFromText(text, emailDateStr) {
   const currentYear = new Date().getFullYear();
@@ -2231,13 +2372,10 @@ function extractAndSyncEventsFromEmailContent(emailsList) {
     const sender = emailItem.from || emailItem.sender || 'Unknown';
     const emailId = emailItem.id || emailItem.message_id || `msg_${Date.now()}`;
 
-    const isMeeting = lowerText.includes('meet') || lowerText.includes('zoom') || lowerText.includes('schedule') || lowerText.includes('call') || lowerText.includes('google meet');
-    const isFollowup = lowerText.includes('follow up') || lowerText.includes('remind') || lowerText.includes('contact');
-    const isDeadline = lowerText.includes('due') || lowerText.includes('deadline') || lowerText.includes('submit') || lowerText.includes('pay');
+    const category = inferEventCategory(textToScan);
 
-    if (isMeeting || isFollowup || isDeadline) {
-      const category = isMeeting ? 'meeting' : (isDeadline ? 'deadline' : 'followup');
-      const title = `${isMeeting ? 'Meeting' : isDeadline ? 'Deadline' : 'Follow up'}: ${subjectText.substring(0, 32)}`;
+    if (category !== 'general') {
+      const title = `${category.charAt(0).toUpperCase() + category.slice(1)}: ${subjectText.substring(0, 32)}`;
       
       // Determine target scheduled date specifically from email content/body text
       const targetDateStr = parseTargetDateFromText(textToScan, emailItem.date);
@@ -2307,12 +2445,24 @@ if (calendarCategoryFilter) {
 }
 
 const categoryMeta = {
-  followup: { icon: "", label: "Client Follow-up", bg: "rgba(99,102,241,0.15)", color: "#818cf8" },
-  meeting: { icon: "", label: "Meeting / Call", bg: "rgba(16,185,129,0.15)", color: "#10b981" },
+  followup: { icon: "", label: "Client Follow-up", bg: "rgba(249,115,22,0.15)", color: "#f97316" },
+  meeting: { icon: "", label: "Meeting / Call", bg: "rgba(59,130,246,0.15)", color: "#3b82f6" },
   grievance: { icon: "", label: "Grievance Resolution", bg: "rgba(244,63,94,0.15)", color: "#f43f5e" },
-  deadline: { icon: "", label: "Project Deadline", bg: "rgba(245,158,11,0.15)", color: "#f59e0b" },
-  general: { icon: "", label: "General Task", bg: "rgba(148,163,184,0.15)", color: "#94a3b8" }
+  deadline: { icon: "", label: "Project Deadline", bg: "rgba(239,68,68,0.15)", color: "#ef4444" },
+  strategy: { icon: "", label: "Strategy Session", bg: "rgba(139,92,246,0.15)", color: "#8b5cf6" },
+  general: { icon: "", label: "General Task", bg: "rgba(20,184,166,0.15)", color: "#14b8a6" }
 };
+
+function normalizeCategory(catStr) {
+  if (!catStr) return 'general';
+  const s = catStr.toLowerCase().trim();
+  if (s.includes('follow') || s === 'client follow-up') return 'followup';
+  if (s.includes('meet') || s.includes('call')) return 'meeting';
+  if (s.includes('grievance')) return 'grievance';
+  if (s.includes('deadline') || s.includes('project deadline')) return 'deadline';
+  if (s.includes('strategy')) return 'strategy';
+  return 'general';
+}
 
 if (calendarSaveEventBtn) {
   calendarSaveEventBtn.addEventListener('click', async () => {
@@ -2372,7 +2522,7 @@ function openCalendarModal(eventObj = null, defaultDateStr = '') {
     calendarEventTitle.value = eventObj.title;
     calendarEventDate.value = eventObj.date;
     calendarEventTime.value = eventObj.time;
-    if (calendarEventCategory) calendarEventCategory.value = eventObj.category || 'general';
+    if (calendarEventCategory) calendarEventCategory.value = normalizeCategory(eventObj.category);
     calendarEventDesc.value = eventObj.description || '';
     if (calendarEventNotify) calendarEventNotify.value = String(eventObj.notifyBefore !== undefined ? eventObj.notifyBefore : 15);
     if (calendarDeleteEventBtn) calendarDeleteEventBtn.style.display = 'block';
@@ -2478,7 +2628,7 @@ function renderCalendar() {
 
     // Apply category filter if selected
     if (selectedCategoryFilter !== 'all') {
-      dayEvents = dayEvents.filter(e => (e.category || 'general') === selectedCategoryFilter);
+      dayEvents = dayEvents.filter(e => normalizeCategory(e.category) === selectedCategoryFilter);
     }
 
     // Apply live search query filter if typed
@@ -2490,7 +2640,7 @@ function renderCalendar() {
     }
 
     dayEvents.forEach(evt => {
-      const cat = categoryMeta[evt.category || 'general'] || categoryMeta.general;
+      const cat = categoryMeta[normalizeCategory(evt.category)] || categoryMeta.general;
       const pill = document.createElement('div');
       pill.className = 'calendar-event-pill';
       pill.style.background = cat.bg;
@@ -2536,7 +2686,7 @@ function renderSidebarEvents() {
     .sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   if (selectedCategoryFilter !== 'all') {
-    upcoming = upcoming.filter(e => (e.category || 'general') === selectedCategoryFilter);
+    upcoming = upcoming.filter(e => normalizeCategory(e.category) === selectedCategoryFilter);
   }
 
   if (searchQuery) {
@@ -2554,7 +2704,7 @@ function renderSidebarEvents() {
   upcoming.forEach(evt => {
     const card = document.createElement('div');
     card.className = 'calendar-sidebar-card';
-    const cat = categoryMeta[evt.category || 'general'] || categoryMeta.general;
+    const cat = categoryMeta[normalizeCategory(evt.category)] || categoryMeta.general;
     
     // Format Date header
     const dateObj = new Date(evt.date);

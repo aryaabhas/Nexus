@@ -1792,6 +1792,12 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.005);
   transition: background 0.15s;
   min-height: 70px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.calendar-day-cell::-webkit-scrollbar {
+  display: none;
 }
 
 .calendar-day-cell:hover {
@@ -1836,6 +1842,9 @@ textarea:focus {
   text-overflow: ellipsis;
   overflow: hidden;
   max-width: 100%;
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
 }
 
 .calendar-sidebar-card {

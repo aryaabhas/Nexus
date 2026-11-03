@@ -64,10 +64,12 @@ export class GraphVisualizer {
     this.searchQuery = query || '';
   }
 
-  setData(nodesData, edgesData) {
+  setData(nodesData, edgesData, anomaliesData = []) {
     this.nodeMap.clear();
     const width = this.canvas.width || 800;
     const height = this.canvas.height || 600;
+
+    this.anomalyNodeIds = new Set(anomaliesData.map(a => a.target_node_id).filter(Boolean));
 
     // Initialize positions in a circle around center
     this.nodes = nodesData.map((n, idx) => {
@@ -79,7 +81,8 @@ export class GraphVisualizer {
         y: (height / 2) + Math.sin(angle) * radius,
         vx: 0,
         vy: 0,
-        type: n.type || 'topic'
+        type: n.type || 'topic',
+        pagerank: n.pagerank || 0.2
       };
       this.nodeMap.set(n.id, node);
       return node;
@@ -89,12 +92,29 @@ export class GraphVisualizer {
       .map(e => ({
         source: this.nodeMap.get(e.source),
         target: this.nodeMap.get(e.target),
-        relation: e.relation || ''
+        relation: e.relation || '',
+        weight: e.weight || 1.0
       }))
       .filter(e => e.source && e.target);
 
     this.selectedNode = null;
     this.hoveredNode = null;
+  }
+
+  panToNode(target) {
+    let targetNode = target;
+    if (typeof target === 'string') {
+      targetNode = this.nodeMap.get(target);
+    }
+    if (!targetNode) return;
+
+    const width = this.width || 800;
+    const height = this.height || 550;
+    this.selectedNode = targetNode;
+    this.scale = 1.3;
+    this.panX = (width / 2) - targetNode.x * this.scale;
+    this.panY = (height / 2) - targetNode.y * this.scale;
+    if (this.onNodeSelect) this.onNodeSelect(targetNode);
   }
 
   setFilter(type, active) {
@@ -194,9 +214,10 @@ export class GraphVisualizer {
     for (let i = visibleNodes.length - 1; i >= 0; i--) {
       const n = visibleNodes[i];
       const cfg = this.typeConfigs[n.type] || this.typeConfigs.topic;
+      const radius = cfg.radius * (n.pagerank ? Math.max(0.85, Math.min(1.8, n.pagerank * 1.4)) : 1.0);
       const dx = n.x - x;
       const dy = n.y - y;
-      if (Math.sqrt(dx * dx + dy * dy) <= cfg.radius + 6) {
+      if (Math.sqrt(dx * dx + dy * dy) <= radius + 6) {
         return n;
       }
     }
@@ -314,8 +335,6 @@ export class GraphVisualizer {
         return false;
       });
 
-      console.log('[SearchDebug] Query:', query, 'Matches:', matches.map(m => m.label));
-
       matches.forEach(matchNode => {
         searchActiveNodes.add(matchNode.id);
         visibleEdges.forEach(e => {
@@ -347,14 +366,16 @@ export class GraphVisualizer {
       ctx.moveTo(edge.source.x, edge.source.y);
       ctx.lineTo(edge.target.x, edge.target.y);
 
+      const edgeWeightFactor = Math.min(3.0, edge.weight || 1.0);
+
       if (isConnectedToSelected || isConnectedToHovered) {
         // Highlight active connection with category-specific color of the partner node
         const partner = (edge.source.id === activeNode.id) ? edge.target : edge.source;
         ctx.strokeStyle = this.categoryColors[partner.type] || '#ffffff';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2.5 * edgeWeightFactor;
       } else if (inSearchActive) {
         ctx.strokeStyle = '#27272a';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1.0 * edgeWeightFactor;
       } else {
         // Faded edge (does not match search result)
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
@@ -391,6 +412,8 @@ export class GraphVisualizer {
       ctx.globalAlpha = inSearchActive ? 1.0 : 0.15;
 
       const cfg = this.typeConfigs[n.type] || this.typeConfigs.topic;
+      const prScale = n.pagerank ? Math.max(0.85, Math.min(1.8, n.pagerank * 1.4)) : 1.0;
+      const nodeRadius = cfg.radius * prScale;
 
       // Find if this node is connected to the hovered/selected node
       let isPartnerNode = false;
@@ -404,20 +427,20 @@ export class GraphVisualizer {
       // Glow / Selection ring
       if (isSelected || isHovered) {
         ctx.beginPath();
-        ctx.arc(n.x, n.y, cfg.radius + 6, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, nodeRadius + 6, 0, Math.PI * 2);
         ctx.fillStyle = isSelected ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)';
         ctx.fill();
       } else if (isPartnerNode && inSearchActive) {
         // Render partner categorization glow ring
         ctx.beginPath();
-        ctx.arc(n.x, n.y, cfg.radius + 6, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, nodeRadius + 6, 0, Math.PI * 2);
         ctx.fillStyle = (this.categoryColors[n.type] || '#ffffff') + '33'; // 20% opacity
         ctx.fill();
       }
 
       // Outer Circle
       ctx.beginPath();
-      ctx.arc(n.x, n.y, cfg.radius, 0, Math.PI * 2);
+      ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
       ctx.fillStyle = '#121215';
       ctx.fill();
       
@@ -432,10 +455,27 @@ export class GraphVisualizer {
 
       // Icon Inside Node
       ctx.fillStyle = '#ffffff';
-      ctx.font = `${cfg.radius * 0.9}px sans-serif`;
+      ctx.font = `${nodeRadius * 0.9}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(cfg.icon, n.x, n.y);
+
+      // Anomaly Alert Badge (⚠️) if flagged
+      if (this.anomalyNodeIds && this.anomalyNodeIds.has(n.id)) {
+        ctx.beginPath();
+        ctx.arc(n.x + nodeRadius * 0.7, n.y - nodeRadius * 0.7, 9, 0, Math.PI * 2);
+        ctx.fillStyle = '#ef4444';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('!', n.x + nodeRadius * 0.7, n.y - nodeRadius * 0.7);
+      }
 
       // Node Label Below
       ctx.fillStyle = isSelected || isHovered ? '#ffffff' : (isPartnerNode && inSearchActive ? '#ffffff' : '#a1a1aa');
@@ -443,7 +483,7 @@ export class GraphVisualizer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       const truncatedLabel = n.label.length > 18 ? n.label.slice(0, 16) + '…' : n.label;
-      ctx.fillText(truncatedLabel, n.x, n.y + cfg.radius + 6);
+      ctx.fillText(truncatedLabel, n.x, n.y + nodeRadius + 6);
       
       ctx.globalAlpha = 1.0;
     }
@@ -451,3 +491,4 @@ export class GraphVisualizer {
     ctx.restore();
   }
 }
+

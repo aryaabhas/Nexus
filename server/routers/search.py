@@ -32,12 +32,9 @@ async def semantic_search(
     uid = user.get("uid", "")
 
     try:
-        # Increase k to account for user filtering
-        raw_results = vector_store.search(body.query, k=body.k * 3)
+        # Search directly in the user's isolated Pinecone namespace
+        user_results = vector_store.search(body.query, uid=uid, k=body.k)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
-
-    # Filter to this user's documents and trim to requested k
-    user_results = [r for r in raw_results if r.get("uid") == uid][: body.k]
 
     return {"results": user_results, "query": body.query}

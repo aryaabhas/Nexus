@@ -18,11 +18,29 @@
     "notifyBefore": 15
   },
   {
-    "id": "1788241504198",
-    "title": "Meeting: Meeting Schedule",
-    "date": "2026-09-09",
+    "id": "1788351430721",
+    "title": "Meeting BDA Of Deolitte",
+    "date": "2026-09-02",
     "time": "12:00",
-    "category": "general",
+    "category": "Client Follow-up",
+    "description": "",
+    "notifyBefore": 15
+  },
+  {
+    "id": "1788351580336",
+    "title": "Meeting: Streamline Project Understanding",
+    "date": "2026-09-23",
+    "time": "12:00",
+    "category": "Strategy Session",
+    "description": "",
+    "notifyBefore": 15
+  },
+  {
+    "id": "1788351592607",
+    "title": "da",
+    "date": "2026-09-17",
+    "time": "12:00",
+    "category": "Strategy Session",
     "description": "",
     "notifyBefore": 15
   }

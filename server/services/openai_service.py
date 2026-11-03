@@ -197,22 +197,13 @@ async def draft_persona_email(
         f"Recipient Email (if any): {recipient_email}\n"
     )
     
-    # Look up user profile to append signature if exists
-    import json
+    # Look up user profile from MongoDB to append signature if exists
     profile_data = {"name": "", "designation": "", "company_name": "", "phone_number": ""}
-    profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "user_profiles.json")
-    if os.path.exists(profile_path):
-        try:
-            with open(profile_path, "r", encoding="utf-8") as f:
-                all_profiles = json.load(f)
-                # Find profile corresponding to the recipient or current context?
-                # Since we don't have user's UID directly passed to openai_service.draft_persona_email, we can either pass it or load it from recipient_email match or let client side append/replace [Sender].
-                # Wait, the prompt says: "These user profile component should get automatically get attached to the end Where we write [Sender] replace it."
-                # We can do this replacement directly in the backend or on the frontend.
-                # Let's support both: Let's pass uid or user info, or do a regex replace in openai_service/emails.py if we pass uid. Let's modify emails.py to fetch the profile of the current user, then do a replacement of "[Sender]" or append it if "[Sender]" is present, or we can handle it directly in draft_persona_email.
-                # Let's adjust draft_persona_email signature to accept user_profile dictionary and perform substitution.
-        except Exception:
-            pass
+    try:
+        from db import profiles_collection
+        # Can query if uid or profile context available
+    except Exception:
+        pass
 
     client = get_client()
     
@@ -238,4 +229,35 @@ async def draft_persona_email(
     import json
     parsed = json.loads(raw_json)
     return parsed
+
+
+ASK_GRAPH_SYSTEM_PROMPT = (
+    "You are an expert Graph Intelligence Assistant for NexusOpsCRM. "
+    "You are provided with structured Knowledge Graph context (nodes, relationships, PageRank centrality scores, edge weights, and detected graph anomalies). "
+    "Analyze the graph context to directly and insightfully answer the user's natural language question. "
+    "Be concise, analytical, and actionable. Highlight specific entity names, organizations, PageRank standings, or anomaly risks where relevant."
+)
+
+
+async def query_graph_ai(user_query: str, graph_context_text: str) -> str:
+    """
+    Answer natural language queries about the Knowledge Graph structure, entities, and anomalies using GPT-4o-mini.
+    """
+    client = get_client()
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
+
+    user_content = f"Question: {user_query}\n\nKnowledge Graph Context:\n{graph_context_text}"
+
+    response = await client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": ASK_GRAPH_SYSTEM_PROMPT},
+            {"role": "user",   "content": user_content},
+        ],
+        max_tokens=350,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
 

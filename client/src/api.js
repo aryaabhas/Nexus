@@ -163,6 +163,22 @@ export async function getKnowledgeGraph(idToken) {
   });
 }
 
+/** Get Knowledge Graph Analytics (nodes, edges, PageRank, anomalies) */
+export async function getGraphAnalytics(idToken) {
+  return apiFetch('/graph/analytics', {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}
+
+/** Ask natural language queries against Knowledge Graph structure */
+export async function askGraph(query, idToken) {
+  return apiFetch('/graph/ask', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ query }),
+  });
+}
+
 /** Rebuild Knowledge Graph from existing stored email summaries */
 export async function rebuildKnowledgeGraph(idToken) {
   return apiFetch('/graph/rebuild', {
@@ -170,6 +186,7 @@ export async function rebuildKnowledgeGraph(idToken) {
     headers: { Authorization: `Bearer ${idToken}` },
   });
 }
+
 
 /** Get user activity/audit logs */
 export async function getActivityLogs(idToken) {

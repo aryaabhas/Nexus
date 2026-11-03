@@ -528,12 +528,35 @@
         <div id="tab-graph" class="tab-panel" role="tabpanel">
           <div class="panel-header">
             <div>
-              <h2>Knowledge Graph</h2>
-              <p>Interactive network mapping relationships between senders, organizations, topics, and action items.</p>
+              <h2>Knowledge Graph & Analytics</h2>
+              <p>Interactive network mapping relationships between senders, organizations, topics, and action items with PageRank scoring & anomaly detection.</p>
             </div>
             <button id="rebuild-graph-btn" class="btn btn-secondary">
               ↻ Rebuild Graph
             </button>
+          </div>
+
+          <!-- "Ask the Graph" AI Query Bar -->
+          <div class="ask-graph-container" style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:12px 16px; margin-bottom:14px; display:flex; flex-direction:column; gap:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700; color:var(--text-primary);">
+                <span style="color:var(--accent-primary); font-size:15px;">✦</span> Ask the Graph (AI Intelligence RAG)
+              </div>
+              <span style="font-size:11.5px; color:var(--text-muted);">GPT-4o-mini Graph Reasoning Engine</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="ask-graph-input" placeholder="e.g. 'Who are our top high-risk clients?' or 'What billing bottlenecks need attention?'"
+                style="flex:1; padding:8px 12px; font-size:13px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); color:var(--text-primary); outline:none;" />
+              <button id="ask-graph-btn" class="btn btn-primary" style="padding:8px 16px; font-size:13px; min-width:100px;">
+                ✦ Ask AI
+              </button>
+            </div>
+            <!-- AI Response Box (Hidden by default) -->
+            <div id="ask-graph-response-box" class="hidden" style="background:rgba(129, 140, 248, 0.05); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:12px 16px; position:relative; margin-top:4px;">
+              <button id="close-ask-graph-response-btn" style="position:absolute; top:8px; right:12px; background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:16px;">&times;</button>
+              <div style="font-size:11px; text-transform:uppercase; font-weight:700; color:var(--accent-primary); margin-bottom:6px;">✦ AI Graph Intelligence Synthesis</div>
+              <div id="ask-graph-response-text" style="font-size:13px; color:var(--text-primary); line-height:1.6; white-space:pre-wrap;"></div>
+            </div>
           </div>
 
           <!-- Graph Toolbar & Filter Bar -->
@@ -563,12 +586,37 @@
             </div>
           </div>
 
-          <!-- Graph Workspace: Canvas + Inspector Sidebar -->
-          <div class="graph-workspace">
-            <div class="canvas-container">
+          <!-- Graph Workspace: Canvas + Analytics Drawer + Inspector Sidebar -->
+          <div class="graph-workspace" style="display:flex; gap:16px; position:relative;">
+            <div class="canvas-container" style="flex:1; position:relative;">
               <canvas id="graph-canvas"></canvas>
               <div class="graph-instructions">
                 Drag nodes to rearrange • Scroll to zoom • Click node for details
+              </div>
+            </div>
+
+            <!-- Right Sidebar: PageRank Leaderboard & Anomaly Diagnostics -->
+            <div id="graph-analytics-panel" style="width:280px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:14px; display:flex; flex-direction:column; gap:14px; overflow-y:auto; max-height:550px;">
+              <!-- Section 1: PageRank Leaderboard -->
+              <div>
+                <h3 style="font-size:13px; font-weight:700; border-bottom:1px solid var(--border-subtle); padding-bottom:6px; margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between;">
+                  <span>👑 Top PageRank Entities</span>
+                  <span style="font-size:10px; font-weight:400; color:var(--text-muted);">Centrality</span>
+                </h3>
+                <div id="pagerank-leaderboard-list" style="display:flex; flex-direction:column; gap:8px;">
+                  <div style="font-size:12px; color:var(--text-muted);">Calculating centrality...</div>
+                </div>
+              </div>
+
+              <!-- Section 2: Graph Risk Anomalies -->
+              <div>
+                <h3 style="font-size:13px; font-weight:700; border-bottom:1px solid var(--border-subtle); padding-bottom:6px; margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between;">
+                  <span>⚠️ Flagged Risk Anomalies</span>
+                  <span id="anomalies-count-badge" class="badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px;">0</span>
+                </h3>
+                <div id="anomalies-list" style="display:flex; flex-direction:column; gap:8px;">
+                  <div style="font-size:12px; color:var(--text-muted);">No anomalies detected.</div>
+                </div>
               </div>
             </div>
 
@@ -586,6 +634,7 @@
             </div>
           </div>
         </div>
+
 
         <!-- Tab Panel: Activity Logs -->
         <div id="tab-logs" class="tab-panel" role="tabpanel">
@@ -704,6 +753,14 @@
               <p>Plan tasks, schedule action items, and manage platform reminders.</p>
             </div>
             <div style="display:flex; gap:12px; align-items:center;">
+              <select id="calendar-category-filter" class="btn btn-secondary btn-sm" style="background:var(--bg-elevated); border:1px solid var(--border-subtle); outline:none; cursor:pointer; min-width: 140px;">
+                <option value="all">All Categories</option>
+                <option value="general">General Task</option>
+                <option value="meeting">Meeting</option>
+                <option value="followup">Client Follow-up</option>
+                <option value="deadline">Project Deadline</option>
+                <option value="strategy">Strategy Session</option>
+              </select>
               <button id="calendar-prev-month-btn" class="btn btn-secondary btn-sm">◀ Prev</button>
               <span id="calendar-month-year-label"
                 style="font-size:16px; font-weight:600; min-width:140px; text-align:center;"></span>
@@ -718,7 +775,7 @@
               style="flex:2.5; display:flex; flex-direction:column; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-md); overflow:hidden;">
               <!-- Weekday Headers -->
               <div
-                style="display:grid; grid-template-columns: repeat(7, 1fr); background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); text-align:center; padding:10px 0; font-weight:600; font-size:13px; color:var(--text-secondary);">
+                style="display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); text-align:center; padding:10px 0; font-weight:600; font-size:13px; color:var(--text-secondary);">
                 <div>Sun</div>
                 <div>Mon</div>
                 <div>Tue</div>
@@ -729,7 +786,7 @@
               </div>
               <!-- Monthly Calendar Days Matrix Grid -->
               <div id="calendar-days-grid"
-                style="flex:1; display:grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: repeat(6, 1fr); background:rgba(0,0,0,0.15);">
+                style="flex:1; display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: repeat(6, minmax(0, 1fr)); background:rgba(0,0,0,0.15);">
                 <!-- Dynamic calendar cells loaded by main.js -->
               </div>
             </div>
@@ -1024,6 +1081,17 @@
               TITLE:</label>
             <input id="calendar-event-title" type="text" placeholder="e.g. Discuss Q3 roadmap"
               style="width:100%; padding:8px 12px; font-size:13px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); color:var(--text-primary);" />
+          </div>
+
+          <div class="compose-field" style="flex-direction:column; align-items:flex-start; gap:6px;">
+            <label for="calendar-event-category" style="font-size:12px; font-weight:600; color:var(--text-muted);">CATEGORY:</label>
+            <select id="calendar-event-category" style="width:100%; padding:8px 12px; font-size:13px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); color:var(--text-primary); outline:none;">
+              <option value="general">General Task</option>
+              <option value="meeting">Meeting</option>
+              <option value="followup">Client Follow-up</option>
+              <option value="deadline">Project Deadline</option>
+              <option value="strategy">Strategy Session</option>
+            </select>
           </div>
 
           <div style="display:flex; gap:12px; width:100%;">

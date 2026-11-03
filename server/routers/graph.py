@@ -83,3 +83,34 @@ async def rebuild_graph(user: dict = Depends(get_current_user)):
         "nodes_count": len(graph["nodes"]),
         "edges_count": len(graph["edges"])
     }
+
+
+from pydantic import BaseModel
+
+
+class AskGraphRequest(BaseModel):
+    query: str
+
+
+@router.get("/analytics")
+async def get_graph_analytics(user: dict = Depends(get_current_user)):
+    """
+    Get graph analytics including PageRank centrality scores, weighted relationship edges, and detected anomalies.
+    """
+    uid = user.get("uid", "")
+    analytics = graph_service.get_graph_analytics(uid)
+    return analytics
+
+
+@router.post("/ask")
+async def ask_graph_endpoint(req: AskGraphRequest, user: dict = Depends(get_current_user)):
+    """
+    Ask natural language questions about graph structure, entity connections, or anomalies using LLM RAG.
+    """
+    if not req.query or not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query string cannot be empty.")
+    
+    uid = user.get("uid", "")
+    res = await graph_service.ask_graph(req.query.strip(), uid)
+    return res
+

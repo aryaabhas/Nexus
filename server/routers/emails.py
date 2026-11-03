@@ -96,37 +96,43 @@ async def send_email_route(
     if not to or not subject:
         raise HTTPException(status_code=400, detail="Recipient email and subject are required.")
 
-    # Process attachments
+    # Process attachments & optionally archive to Cloudflare R2
     mime_attachments = []
     if attachments:
+        from services import r2_service
         for file in attachments:
             try:
                 content = await file.read()
                 # Check if it is a valid file
                 if file.filename:
                     mime_attachments.append((file.filename, content, file.content_type))
+                    try:
+                        r2_service.upload_file_bytes(
+                            uid=uid,
+                            filename=file.filename,
+                            file_bytes=content,
+                            content_type=file.content_type or "application/octet-stream",
+                            subfolder="outgoing"
+                        )
+                    except Exception as r2_err:
+                        print(f"[R2Storage] Outgoing upload failed for {file.filename}: {r2_err}")
             except Exception as fe:
                 print(f"[SendEmailError] Failed to read attachment {file.filename}: {fe}")
 
     try:
-        # Check user profile to replace [Sender] in body
-        import json
-        profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "user_profiles.json")
-        if os.path.exists(profile_path):
-            try:
-                with open(profile_path, "r", encoding="utf-8") as f:
-                    profiles = json.load(f)
-                    user_prof = profiles.get(uid)
-                    if user_prof:
-                        sig = []
-                        if user_prof.get("name"):
-                            sig.append(user_prof["name"])
-                        if user_prof.get("designation"):
-                            sig.append(user_prof["designation"])
-                        if user_prof.get("company_name"):
-                            sig.append(user_prof["company_name"])
-                        if user_prof.get("phone_number"):
-                            sig.append(user_prof["phone_number"])
+        # Check user profile from MongoDB to replace [Sender] in body
+        from db import profiles_collection
+        user_prof = profiles_collection.find_one({"uid": uid}, {"_id": 0})
+        if user_prof:
+            sig = []
+            if user_prof.get("name"):
+                sig.append(user_prof["name"])
+            if user_prof.get("designation"):
+                sig.append(user_prof["designation"])
+            if user_prof.get("company_name"):
+                sig.append(user_prof["company_name"])
+            if user_prof.get("phone_number"):
+                sig.append(user_prof["phone_number"])
                         
                         signature_str = "\n".join(sig)
                         if "[Sender]" in body:
@@ -520,12 +526,14 @@ async def get_attachment_route(
     user: dict = Depends(get_current_user)
 ):
     """
-    Fetch and decode an attachment by ID from Gmail API.
+    Fetch and decode an attachment by ID from Gmail API, and cache/archive to Cloudflare R2.
     """
     import base64
-
     import httpx
     from fastapi.responses import Response
+    from services import r2_service
+
+    uid = user.get("uid", "")
     
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -541,6 +549,18 @@ async def get_attachment_route(
         
         # Decode base64url encoded attachment payload
         file_bytes = base64.urlsafe_b64decode(raw_data)
+        
+        # Archive copy to Cloudflare R2 under user namespace
+        try:
+            r2_service.upload_file_bytes(
+                uid=uid,
+                filename=f"{message_id}_{filename}",
+                file_bytes=file_bytes,
+                content_type="application/octet-stream",
+                subfolder="incoming"
+            )
+        except Exception as r2_err:
+            print(f"[R2Storage] Incoming attachment archive failed: {r2_err}")
         
         return Response(
             content=file_bytes,
@@ -608,25 +628,20 @@ async def generate_draft(body: EmailDraftRequest, user: dict = Depends(get_curre
             recipient_email=body.recipient_email or ""
         )
         
-        # Load user profile if exists and replace [Sender] in body
-        import json
+        # Load user profile from MongoDB if exists and replace [Sender] in body
+        from db import profiles_collection
         uid = user.get("uid", "")
-        profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "user_profiles.json")
-        if os.path.exists(profile_path):
-            try:
-                with open(profile_path, "r", encoding="utf-8") as f:
-                    profiles = json.load(f)
-                    user_prof = profiles.get(uid)
-                    if user_prof:
-                        sig = []
-                        if user_prof.get("name"):
-                            sig.append(user_prof["name"])
-                        if user_prof.get("designation"):
-                            sig.append(user_prof["designation"])
-                        if user_prof.get("company_name"):
-                            sig.append(user_prof["company_name"])
-                        if user_prof.get("phone_number"):
-                            sig.append(user_prof["phone_number"])
+        user_prof = profiles_collection.find_one({"uid": uid}, {"_id": 0})
+        if user_prof:
+            sig = []
+            if user_prof.get("name"):
+                sig.append(user_prof["name"])
+            if user_prof.get("designation"):
+                sig.append(user_prof["designation"])
+            if user_prof.get("company_name"):
+                sig.append(user_prof["company_name"])
+            if user_prof.get("phone_number"):
+                sig.append(user_prof["phone_number"])
                         
                         signature_str = "\n".join(sig)
                         if "body" in draft and "[Sender]" in draft["body"]:
