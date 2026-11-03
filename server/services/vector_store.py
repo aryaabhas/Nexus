@@ -1,16 +1,15 @@
 """
-Vector store service — Pinecone Integrated Embeddings (llama-text-embed-v2).
+Vector store service — Pinecone ONLY for email summaries & semantic search.
 
 Features:
 - Embeddings handled natively by Pinecone Cloud (0 local RAM footprint).
 - Strict multi-tenant user isolation using Pinecone namespaces (`namespace=uid`).
-- Metadata persisted in MongoDB Atlas `email_metadata` collection.
+- NO MongoDB caching for email summaries — Pinecone is the single source of truth.
 """
 
 import os
 from dotenv import load_dotenv
 from pinecone import Pinecone
-from db import metadata_collection
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
@@ -37,8 +36,7 @@ def load_store() -> None:
 
 def add_document(metadata: dict) -> str:
     """
-    Store an email document in Pinecone under the user's isolated namespace
-    and cache the metadata in MongoDB Atlas.
+    Store an email document exclusively in Pinecone under the user's isolated namespace.
     """
     idx = _get_index()
     doc_id = metadata.get("message_id") or metadata.get("doc_id")
@@ -51,49 +49,42 @@ def add_document(metadata: dict) -> str:
 
     chunk_text = f"From: {sender}\nDate: {date}\nSubject: {title}\nSummary: {summary}"
 
-    # Upsert document into Pinecone with automatic integrated embedding
+    # Upsert document into Pinecone with full metadata fields
+    doc_payload = {
+        "_id": doc_id,
+        "title": title,
+        "chunk_text": chunk_text,
+        "subject": title,
+        "summary": summary,
+        "from": sender,
+        "date": date,
+        "message_id": doc_id,
+        "uid": uid
+    }
+
     try:
         res = idx.documents.upsert(
             namespace=uid,
-            documents=[{
-                "_id": doc_id,
-                "title": title,
-                "chunk_text": chunk_text
-            }]
+            documents=[doc_payload]
         )
         print(f"[VectorStore] Successfully upserted doc '{doc_id}' to Pinecone namespace '{uid}': {res}")
     except Exception as e:
-        print(f"[VectorStore] Error upserting to Pinecone (documents.upsert): {e}")
-        # Fallback to upsert_records if the index was created using create_for_model (Records API)
+        print(f"[VectorStore] documents.upsert notice: {e}, falling back to upsert_records...")
         try:
             res = idx.upsert_records(
                 namespace=uid or "__default__",
-                records=[{
-                    "_id": doc_id,
-                    "title": title,
-                    "chunk_text": chunk_text
-                }]
+                records=[doc_payload]
             )
             print(f"[VectorStore] Successfully upserted doc via fallback (upsert_records): {res}")
         except Exception as e2:
-            print(f"[VectorStore] Fallback upsert_records also failed: {e2}")
-
-    # Persist metadata record in MongoDB Atlas
-    try:
-        metadata_collection.update_one(
-            {"message_id": doc_id, "uid": uid},
-            {"$set": {**metadata, "doc_id": doc_id, "uid": uid}},
-            upsert=True
-        )
-    except Exception as e:
-        print(f"[VectorStore] Error saving metadata to MongoDB: {e}")
+            print(f"[VectorStore] Fallback upsert_records error: {e2}")
 
     return doc_id
 
 def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]:
     """
-    Search documents within the user's isolated namespace using Pinecone Integrated search.
-    Enriches matching document IDs with their full metadata stored in MongoDB.
+    Search documents within the user's isolated Pinecone namespace using integrated search.
+    Reads fields directly from Pinecone.
     """
     idx = _get_index()
     matches = []
@@ -112,85 +103,139 @@ def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]
         )
         matches = getattr(response, "matches", []) or []
     except Exception as e:
-        print(f"[VectorStore] documents.search failed, attempting fallback idx.search: {e}")
-        # 2. Try Records Search API (Integrated Index created for model)
+        # 2. Try Records Search API (Integrated Index)
         try:
             resp = idx.search(
                 namespace=uid or "__default__",
                 top_k=k,
                 inputs={"text": query_text},
-                fields=["title", "chunk_text"]
+                fields=["title", "chunk_text", "summary", "subject", "from", "date", "message_id"]
             )
-            hits = getattr(getattr(resp, "result", None), "hits", []) or []
-            matches = hits
+            matches = getattr(getattr(resp, "result", None), "hits", []) or []
         except Exception as e2:
-            print(f"[VectorStore] Both Pinecone search methods failed: {e2}")
+            print(f"[VectorStore] Pinecone search error: {e2}")
 
     results = []
     for match in matches:
         match_id = getattr(match, "id", None) or getattr(match, "_id", None)
         score = float(getattr(match, "score", 0.0))
-        
-        # Retrieve metadata from MongoDB
-        meta = metadata_collection.find_one({"message_id": match_id, "uid": uid}, {"_id": 0})
-        if not meta:
-            meta = metadata_collection.find_one({"doc_id": match_id, "uid": uid}, {"_id": 0})
+        fields = getattr(match, "fields", {}) or {}
 
-        if meta:
-            meta["score"] = score
-            results.append(meta)
-        else:
-            fields = getattr(match, "fields", {}) or {}
-            title = fields.get("title") or getattr(match, "title", "")
-            results.append({
-                "message_id": match_id,
-                "doc_id": match_id,
-                "subject": title,
-                "score": score
-            })
+        subject = fields.get("subject") or fields.get("title") or getattr(match, "title", "No Subject")
+        summary = fields.get("summary", "")
+        sender = fields.get("from", "")
+        date = fields.get("date", "")
 
-    # If Pinecone search didn't return any matches (e.g. index still propagating or empty),
-    # fallback to MongoDB text/regex search so user ALWAYS gets results
-    if not results:
-        regex_query = {"$regex": query_text, "$options": "i"}
-        mongo_matches = list(metadata_collection.find({
-            "uid": uid,
-            "$or": [
-                {"subject": regex_query},
-                {"summary": regex_query},
-                {"from": regex_query}
-            ]
-        }, {"_id": 0}).limit(k))
-        for m in mongo_matches:
-            m["score"] = 0.85
-            results.append(m)
+        results.append({
+            "message_id": match_id,
+            "doc_id": match_id,
+            "subject": subject,
+            "summary": summary,
+            "from": sender,
+            "date": date,
+            "score": score
+        })
 
     return results
 
 def get_all_summaries(uid: str | None = None) -> list[dict]:
-    """Return all stored email metadata from MongoDB."""
-    query = {"uid": uid} if uid else {}
-    return list(metadata_collection.find(query, {"_id": 0}))
+    """
+    Fetch all stored email summaries directly from Pinecone for the user's namespace.
+    """
+    idx = _get_index()
+    namespace = uid or "default_user"
+    summaries = []
+
+    try:
+        # List document IDs from Pinecone namespace
+        doc_ids = []
+        try:
+            for item in idx.documents.list(namespace=namespace):
+                doc_ids.append(getattr(item, "id", None) or getattr(item, "_id", None))
+        except Exception:
+            # Fallback to Index.list
+            try:
+                for id_batch in idx.list(namespace=namespace):
+                    doc_ids.extend(id_batch)
+            except Exception as e:
+                print(f"[VectorStore] Unable to list IDs from Pinecone: {e}")
+
+        if not doc_ids:
+            return []
+
+        # Fetch records with fields in batches of 100
+        for i in range(0, len(doc_ids), 100):
+            batch = [d for d in doc_ids[i:i+100] if d]
+            if not batch:
+                continue
+
+            try:
+                fetched = idx.documents.fetch(namespace=namespace, ids=batch)
+                docs = getattr(fetched, "documents", {}) or {}
+                for mid, doc in docs.items():
+                    summaries.append({
+                        "message_id": mid,
+                        "doc_id": mid,
+                        "subject": getattr(doc, "subject", "") or getattr(doc, "title", "No Subject"),
+                        "summary": getattr(doc, "summary", ""),
+                        "from": getattr(doc, "from", ""),
+                        "date": getattr(doc, "date", ""),
+                        "uid": namespace
+                    })
+            except Exception:
+                # Fallback to standard fetch
+                try:
+                    fetched = idx.fetch(ids=batch, namespace=namespace)
+                    vectors = getattr(fetched, "vectors", {}) or {}
+                    for mid, vec in vectors.items():
+                        meta = getattr(vec, "metadata", {}) or {}
+                        summaries.append({
+                            "message_id": mid,
+                            "doc_id": mid,
+                            "subject": meta.get("subject", meta.get("title", "No Subject")),
+                            "summary": meta.get("summary", ""),
+                            "from": meta.get("from", ""),
+                            "date": meta.get("date", ""),
+                            "uid": namespace
+                        })
+                except Exception as fe:
+                    print(f"[VectorStore] Fetch batch error from Pinecone: {fe}")
+
+    except Exception as e:
+        print(f"[VectorStore] Error fetching summaries from Pinecone: {e}")
+
+    return summaries
 
 def is_already_stored(message_id: str, uid: str | None = None) -> bool:
-    """Check if an email is already stored."""
-    query = {"message_id": message_id}
-    if uid:
-        query["uid"] = uid
-    return metadata_collection.count_documents(query) > 0
+    """Check if an email is already stored in Pinecone."""
+    idx = _get_index()
+    namespace = uid or "default_user"
+    try:
+        res = idx.documents.fetch(namespace=namespace, ids=[message_id])
+        docs = getattr(res, "documents", {}) or {}
+        if message_id in docs:
+            return True
+    except Exception:
+        pass
+
+    try:
+        res = idx.fetch(ids=[message_id], namespace=namespace)
+        vectors = getattr(res, "vectors", {}) or {}
+        return message_id in vectors
+    except Exception:
+        return False
 
 def delete_document(target_id: str, uid: str = "default_user") -> bool:
-    """
-    Delete document from Pinecone and MongoDB.
-    """
+    """Delete document directly from Pinecone."""
     idx = _get_index()
     try:
         idx.documents.delete(namespace=uid, ids=[target_id])
+        return True
     except Exception as e:
-        print(f"[VectorStore] Pinecone delete error: {e}")
-
-    res = metadata_collection.delete_one({
-        "$or": [{"message_id": target_id}, {"doc_id": target_id}],
-        **({"uid": uid} if uid else {})
-    })
-    return res.deleted_count > 0
+        print(f"[VectorStore] documents.delete notice: {e}, trying idx.delete...")
+        try:
+            idx.delete(ids=[target_id], namespace=uid)
+            return True
+        except Exception as e2:
+            print(f"[VectorStore] Pinecone delete error: {e2}")
+            return False
