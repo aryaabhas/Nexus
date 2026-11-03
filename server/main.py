@@ -87,7 +87,43 @@ async def root():
 
 @app.get("/api/health", tags=["health"])
 async def health():
-    return {"status": "ok", "stored_emails": len(vector_store.get_all_summaries())}
+    status = {
+        "status": "ok",
+        "services": {
+            "mongodb": "unknown",
+            "pinecone": "unknown",
+            "r2_cloudflare": "unknown"
+        }
+    }
+    
+    # 1. MongoDB check
+    try:
+        from db import client as mongo_client
+        mongo_client.admin.command('ping')
+        status["services"]["mongodb"] = "connected"
+    except Exception as e:
+        status["services"]["mongodb"] = f"error: {str(e)}"
+
+    # 2. Pinecone check
+    try:
+        from services.vector_store import get_pinecone_client, INDEX_NAME
+        pc = get_pinecone_client()
+        if pc:
+            status["services"]["pinecone"] = "connected"
+        else:
+            status["services"]["pinecone"] = "not_initialized"
+    except Exception as e:
+        status["services"]["pinecone"] = f"error: {str(e)}"
+
+    # 3. Cloudflare R2 check
+    try:
+        from services.r2_service import s3_client, R2_BUCKET_NAME
+        s3_client.head_bucket(Bucket=R2_BUCKET_NAME)
+        status["services"]["r2_cloudflare"] = "connected"
+    except Exception as e:
+        status["services"]["r2_cloudflare"] = f"error: {str(e)}"
+
+    return status
 
 
 if __name__ == "__main__":
