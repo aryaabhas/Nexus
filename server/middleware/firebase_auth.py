@@ -41,13 +41,12 @@ def _init_firebase():
         _firebase_initialized = True
         return
 
-    # 3. Fallback: initialize with project ID options directly
+    # 3. Fallback: initialize with project ID options directly without ApplicationDefault
     project_id = os.getenv("FIREBASE_PROJECT_ID", "vetra-2c756")
     try:
-        cred = credentials.ApplicationDefault()
-        firebase_admin.initialize_app(cred, {"projectId": project_id})
-    except Exception:
         firebase_admin.initialize_app(options={"projectId": project_id})
+    except Exception as e:
+        print(f"[FirebaseAuth] Warning initializing with projectId only: {e}")
 
     _firebase_initialized = True
 
