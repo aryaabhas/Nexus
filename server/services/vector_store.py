@@ -141,68 +141,56 @@ def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]
 def get_all_summaries(uid: str | None = None) -> list[dict]:
     """
     Fetch all stored email summaries directly from Pinecone for the user's namespace.
+    Uses Documents API (/namespaces/{namespace}/documents/list and /fetch).
     """
     idx = _get_index()
     namespace = uid or "default_user"
     summaries = []
 
     try:
-        # List document IDs from Pinecone namespace
         doc_ids = []
+        # Paginate through documents.list
         try:
             for item in idx.documents.list(namespace=namespace):
-                doc_ids.append(getattr(item, "id", None) or getattr(item, "_id", None))
-        except Exception:
-            # Fallback to Index.list
-            try:
-                for id_batch in idx.list(namespace=namespace):
-                    doc_ids.extend(id_batch)
-            except Exception as e:
-                print(f"[VectorStore] Unable to list IDs from Pinecone: {e}")
+                doc_id = getattr(item, "_id", None) or getattr(item, "id", None)
+                if doc_id:
+                    doc_ids.append(str(doc_id))
+        except Exception as e:
+            print(f"[VectorStore] Notice on idx.documents.list: {e}")
 
         if not doc_ids:
             return []
 
-        # Fetch records with fields in batches of 100
-        for i in range(0, len(doc_ids), 100):
-            batch = [d for d in doc_ids[i:i+100] if d]
-            if not batch:
-                continue
-
+        # Fetch in batches of 50
+        for i in range(0, len(doc_ids), 50):
+            batch = doc_ids[i:i+50]
             try:
                 fetched = idx.documents.fetch(namespace=namespace, ids=batch)
                 docs = getattr(fetched, "documents", {}) or {}
                 for mid, doc in docs.items():
+                    subj = (
+                        getattr(doc, "subject", "")
+                        or getattr(doc, "title", "")
+                        or "No Subject"
+                    )
+                    summ = getattr(doc, "summary", "") or ""
+                    sender = getattr(doc, "from", "") or ""
+                    dt = getattr(doc, "date", "") or ""
+
                     summaries.append({
                         "message_id": mid,
                         "doc_id": mid,
-                        "subject": getattr(doc, "subject", "") or getattr(doc, "title", "No Subject"),
-                        "summary": getattr(doc, "summary", ""),
-                        "from": getattr(doc, "from", ""),
-                        "date": getattr(doc, "date", ""),
+                        "subject": subj,
+                        "summary": summ,
+                        "from": sender,
+                        "date": dt,
                         "uid": namespace
                     })
-            except Exception:
-                # Fallback to standard fetch
-                try:
-                    fetched = idx.fetch(ids=batch, namespace=namespace)
-                    vectors = getattr(fetched, "vectors", {}) or {}
-                    for mid, vec in vectors.items():
-                        meta = getattr(vec, "metadata", {}) or {}
-                        summaries.append({
-                            "message_id": mid,
-                            "doc_id": mid,
-                            "subject": meta.get("subject", meta.get("title", "No Subject")),
-                            "summary": meta.get("summary", ""),
-                            "from": meta.get("from", ""),
-                            "date": meta.get("date", ""),
-                            "uid": namespace
-                        })
-                except Exception as fe:
-                    print(f"[VectorStore] Fetch batch error from Pinecone: {fe}")
+            except Exception as fe:
+                print(f"[VectorStore] Error fetching batch from idx.documents.fetch: {fe}")
 
     except Exception as e:
-        print(f"[VectorStore] Error fetching summaries from Pinecone: {e}")
+        print(f"[VectorStore] Error in get_all_summaries: {e}")
 
     return summaries
 
@@ -213,15 +201,7 @@ def is_already_stored(message_id: str, uid: str | None = None) -> bool:
     try:
         res = idx.documents.fetch(namespace=namespace, ids=[message_id])
         docs = getattr(res, "documents", {}) or {}
-        if message_id in docs:
-            return True
-    except Exception:
-        pass
-
-    try:
-        res = idx.fetch(ids=[message_id], namespace=namespace)
-        vectors = getattr(res, "vectors", {}) or {}
-        return message_id in vectors
+        return message_id in docs
     except Exception:
         return False
 
@@ -232,10 +212,5 @@ def delete_document(target_id: str, uid: str = "default_user") -> bool:
         idx.documents.delete(namespace=uid, ids=[target_id])
         return True
     except Exception as e:
-        print(f"[VectorStore] documents.delete notice: {e}, trying idx.delete...")
-        try:
-            idx.delete(ids=[target_id], namespace=uid)
-            return True
-        except Exception as e2:
-            print(f"[VectorStore] Pinecone delete error: {e2}")
-            return False
+        print(f"[VectorStore] Error deleting doc from Pinecone: {e}")
+        return False
