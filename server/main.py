@@ -106,9 +106,9 @@ async def health():
 
     # 2. Pinecone check
     try:
-        from services.vector_store import get_pinecone_client, INDEX_NAME
-        pc = get_pinecone_client()
-        if pc:
+        from services.vector_store import _get_index
+        idx = _get_index()
+        if idx is not None:
             status["services"]["pinecone"] = "connected"
         else:
             status["services"]["pinecone"] = "not_initialized"
