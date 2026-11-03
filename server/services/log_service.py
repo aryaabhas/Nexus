@@ -14,9 +14,10 @@ def add_log(uid: str, email: str, action: str, details: str, status: str = "SUCC
         "status": status
     }
     try:
-        logs_collection.insert_one(entry)
+        res = logs_collection.insert_one(entry)
+        print(f"[LogService] Log recorded: [{action}] by {email or uid} (id: {res.inserted_id})")
     except Exception as e:
-        print(f"[LogService] Failed to write log: {e}")
+        print(f"[LogService] Failed to write log to MongoDB: {e}")
 
 def get_user_logs(uid: str) -> list[dict]:
     """

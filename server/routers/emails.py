@@ -192,6 +192,15 @@ async def fetch_emails(
     user_summaries = {s["message_id"]: s.get("summary", "") for s in all_summaries}
     print(f"[Terminal Log] [Success] Fetched {len(emails)} emails ({len(user_summaries)} already summarized).")
 
+    # Record fetch activity in MongoDB logs
+    log_service.add_log(
+        uid=uid,
+        email=user.get("email") or "",
+        action="FETCH_EMAILS",
+        details=f"Fetched {len(emails)} emails from Gmail inbox ({len(user_summaries)} summarized).",
+        status="SUCCESS"
+    )
+
     # Return email list with full body for modal preview
     return {
         "emails": [

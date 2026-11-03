@@ -34,6 +34,14 @@ async def semantic_search(
     try:
         # Search directly in the user's isolated Pinecone namespace
         user_results = vector_store.search(body.query, uid=uid, k=body.k)
+        from services import log_service
+        log_service.add_log(
+            uid=uid,
+            email=user.get("email") or "",
+            action="SEMANTIC_SEARCH",
+            details=f"Ran semantic search for '{body.query}' (Found {len(user_results)} matches).",
+            status="SUCCESS"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
