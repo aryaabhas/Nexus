@@ -1,0 +1,9 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://nexus-api-ydmt.onrender.com/api/:path*"
+    }
+  ]
+}
+
