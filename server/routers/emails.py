@@ -188,8 +188,8 @@ async def fetch_emails(
         raise HTTPException(status_code=502, detail=f"Gmail API error: {e}")
 
     # Attach existing summaries from vector store
-    all_summaries = vector_store.get_all_summaries()
-    user_summaries = {s["message_id"]: s["summary"] for s in all_summaries if s.get("uid") == uid}
+    all_summaries = vector_store.get_all_summaries(uid=uid)
+    user_summaries = {s["message_id"]: s.get("summary", "") for s in all_summaries}
     print(f"[Terminal Log] [Success] Fetched {len(emails)} emails ({len(user_summaries)} already summarized).")
 
     # Return email list with full body for modal preview
@@ -225,15 +225,17 @@ async def summarize_emails(
     print(f"[Terminal Log] [Summarize] Action: Summarize {len(body.message_ids)} emails requested by {user.get('email')} (force={body.force})")
     results = []
 
+    uid = user.get("uid", "")
+
     for msg_id in body.message_ids:
         # Delete old summary if force=True
-        if body.force and vector_store.is_already_stored(msg_id):
-            vector_store.delete_document(msg_id)
+        if body.force and vector_store.is_already_stored(msg_id, uid=uid):
+            vector_store.delete_document(msg_id, uid=uid)
 
         # Skip if already stored (only when force=False)
-        if not body.force and vector_store.is_already_stored(msg_id):
+        if not body.force and vector_store.is_already_stored(msg_id, uid=uid):
             existing = next(
-                (m for m in vector_store.get_all_summaries() if m["message_id"] == msg_id),
+                (m for m in vector_store.get_all_summaries(uid=uid) if m["message_id"] == msg_id),
                 None,
             )
             results.append({
@@ -404,14 +406,11 @@ async def summarize_email_club(
 @router.get("/summaries")
 async def get_summaries(user: dict = Depends(get_current_user)):
     """
-    Return all stored email summaries from the vector store metadata.
-    Filtered by the requesting user's UID.
+    Return all stored email summaries from Pinecone.
+    Filtered by the requesting user's UID namespace.
     """
     uid = user.get("uid", "")
-    all_summaries = vector_store.get_all_summaries()
-
-    user_summaries = [s for s in all_summaries if s.get("uid") == uid]
-
+    user_summaries = vector_store.get_all_summaries(uid=uid)
     return {"summaries": user_summaries}
 
 
