@@ -96,6 +96,9 @@ def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]
     Enriches matching document IDs with their full metadata stored in MongoDB.
     """
     idx = _get_index()
+    matches = []
+
+    # 1. Try Documents API (Document-based Index)
     try:
         response = idx.documents.search(
             namespace=uid,
@@ -107,34 +110,62 @@ def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]
             }],
             include_fields=["*"]
         )
-        
         matches = getattr(response, "matches", []) or []
-        results = []
-        for match in matches:
-            match_id = getattr(match, "id", None) or getattr(match, "_id", None)
-            score = float(getattr(match, "score", 0.0))
-            
-            # Retrieve metadata from MongoDB
-            meta = metadata_collection.find_one({"message_id": match_id, "uid": uid}, {"_id": 0})
-            if not meta:
-                # Fallback if doc_id was used
-                meta = metadata_collection.find_one({"doc_id": match_id, "uid": uid}, {"_id": 0})
-
-            if meta:
-                meta["score"] = score
-                results.append(meta)
-            else:
-                title = getattr(match, "title", "")
-                results.append({
-                    "message_id": match_id,
-                    "doc_id": match_id,
-                    "subject": title,
-                    "score": score
-                })
-        return results
     except Exception as e:
-        print(f"[VectorStore] Search error in Pinecone: {e}")
-        return []
+        print(f"[VectorStore] documents.search failed, attempting fallback idx.search: {e}")
+        # 2. Try Records Search API (Integrated Index created for model)
+        try:
+            resp = idx.search(
+                namespace=uid or "__default__",
+                top_k=k,
+                inputs={"text": query_text},
+                fields=["title", "chunk_text"]
+            )
+            hits = getattr(getattr(resp, "result", None), "hits", []) or []
+            matches = hits
+        except Exception as e2:
+            print(f"[VectorStore] Both Pinecone search methods failed: {e2}")
+
+    results = []
+    for match in matches:
+        match_id = getattr(match, "id", None) or getattr(match, "_id", None)
+        score = float(getattr(match, "score", 0.0))
+        
+        # Retrieve metadata from MongoDB
+        meta = metadata_collection.find_one({"message_id": match_id, "uid": uid}, {"_id": 0})
+        if not meta:
+            meta = metadata_collection.find_one({"doc_id": match_id, "uid": uid}, {"_id": 0})
+
+        if meta:
+            meta["score"] = score
+            results.append(meta)
+        else:
+            fields = getattr(match, "fields", {}) or {}
+            title = fields.get("title") or getattr(match, "title", "")
+            results.append({
+                "message_id": match_id,
+                "doc_id": match_id,
+                "subject": title,
+                "score": score
+            })
+
+    # If Pinecone search didn't return any matches (e.g. index still propagating or empty),
+    # fallback to MongoDB text/regex search so user ALWAYS gets results
+    if not results:
+        regex_query = {"$regex": query_text, "$options": "i"}
+        mongo_matches = list(metadata_collection.find({
+            "uid": uid,
+            "$or": [
+                {"subject": regex_query},
+                {"summary": regex_query},
+                {"from": regex_query}
+            ]
+        }, {"_id": 0}).limit(k))
+        for m in mongo_matches:
+            m["score"] = 0.85
+            results.append(m)
+
+    return results
 
 def get_all_summaries(uid: str | None = None) -> list[dict]:
     """Return all stored email metadata from MongoDB."""
