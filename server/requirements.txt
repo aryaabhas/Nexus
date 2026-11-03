@@ -4,7 +4,6 @@ httpx==0.27.0
 python-dotenv==1.0.1
 firebase-admin==6.5.0
 openai==1.35.0
-faiss-cpu==1.15.0
-sentence-transformers>=5.0.0
-numpy>=2.1.0
-python-multipart==0.0.9
+pymongo==4.8.0
+boto3==1.34.118
+pinecone-client==5.0.0
