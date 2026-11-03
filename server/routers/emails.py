@@ -1,11 +1,15 @@
 """
-Emails router — fetch from Gmail, summarize, and store in FAISS.
+Emails router — fetch from Gmail, summarize, and store in FAISS / Pinecone.
 All routes are protected by Firebase ID token auth.
 """
 
+import base64
+import json
 import os
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
+import httpx
 from middleware.firebase_auth import get_current_user
 from pydantic import BaseModel
 from services import (
@@ -13,6 +17,7 @@ from services import (
     graph_service,
     log_service,
     openai_service,
+    r2_service,
     reply_tracker_service,
     vector_store,
 )
@@ -21,8 +26,6 @@ router = APIRouter(prefix="/api/emails", tags=["emails"])
 
 
 # ── Request / Response models ────────────────────────────────────────────────
-
-
 
 class FetchRequest(BaseModel):
     oauth_token: str                  # Google OAuth2 access token
@@ -60,7 +63,7 @@ async def delete_summary_route(
     user: dict = Depends(get_current_user),
 ):
     """
-    Delete a stored summary from FAISS and metadata by message_id or doc_id.
+    Delete a stored summary from vector store and metadata by message_id or doc_id.
     """
     target_id = body.message_id if body and body.message_id else message_id
     if not target_id:
@@ -71,11 +74,11 @@ async def delete_summary_route(
     uid = user.get("uid", "")
     email_addr = user.get("email") or ""
     if not removed:
-        print(f"[Terminal Log] [Warning] Summary '{target_id}' not found in FAISS")
+        print(f"[Terminal Log] [Warning] Summary '{target_id}' not found in vector store")
         log_service.add_log(uid, email_addr, "DELETE_SUMMARY", f"Failed to delete summary (ID: {target_id}). Summary not found.", "ERROR")
         raise HTTPException(status_code=404, detail="Summary not found")
-    print(f"[Terminal Log] [Success] Summary '{target_id}' deleted from FAISS & metadata index rebuilt.")
-    log_service.add_log(uid, email_addr, "DELETE_SUMMARY", f"Deleted summary (ID: {target_id}) from FAISS.", "SUCCESS")
+    print(f"[Terminal Log] [Success] Summary '{target_id}' deleted from vector store & metadata index rebuilt.")
+    log_service.add_log(uid, email_addr, "DELETE_SUMMARY", f"Deleted summary (ID: {target_id}) from vector store.", "SUCCESS")
     return {"status": "deleted", "message_id": target_id}
 
 
@@ -99,7 +102,6 @@ async def send_email_route(
     # Process attachments & optionally archive to Cloudflare R2
     mime_attachments = []
     if attachments:
-        from services import r2_service
         for file in attachments:
             try:
                 content = await file.read()
@@ -133,15 +135,16 @@ async def send_email_route(
                 sig.append(user_prof["company_name"])
             if user_prof.get("phone_number"):
                 sig.append(user_prof["phone_number"])
-                        
-                        signature_str = "\n".join(sig)
-                        if "[Sender]" in body:
-                            body = body.replace("[Sender]", signature_str)
-                        else:
-                            body = body + "\n\n" + signature_str
-            except Exception:
-                pass
 
+            signature_str = "\n".join(sig)
+            if "[Sender]" in body:
+                body = body.replace("[Sender]", signature_str)
+            else:
+                body = body + "\n\n" + signature_str
+    except Exception:
+        pass
+
+    try:
         res = await gmail_service.send_email(
             access_token=oauth_token,
             to=to,
@@ -158,6 +161,7 @@ async def send_email_route(
         log_service.add_log(uid, email_addr, "FORWARD_EMAIL", f"Failed to forward email summary to '{to}': {e!s}", "ERROR")
         raise HTTPException(status_code=502, detail=f"Failed to send email via Gmail API: {e}")
 
+
 @router.post("/fetch")
 async def fetch_emails(
     body: FetchRequest,
@@ -170,7 +174,6 @@ async def fetch_emails(
     """
     print(f"[Terminal Log] [Fetch] Action: Fetch emails requested by {user.get('email')} (sender='{body.sender}', days={body.days})")
     uid = user.get("uid", "")
-    email_addr = user.get("email") or ""
     try:
         emails = await gmail_service.fetch_emails_with_content(
             access_token=body.oauth_token,
@@ -184,7 +187,7 @@ async def fetch_emails(
         print(f"[Terminal Log] [Error] Error fetching emails: {e}")
         raise HTTPException(status_code=502, detail=f"Gmail API error: {e}")
 
-    # Attach existing summaries from FAISS
+    # Attach existing summaries from vector store
     all_summaries = vector_store.get_all_summaries()
     user_summaries = {s["message_id"]: s["summary"] for s in all_summaries if s.get("uid") == uid}
     print(f"[Terminal Log] [Success] Fetched {len(emails)} emails ({len(user_summaries)} already summarized).")
@@ -216,8 +219,7 @@ async def summarize_emails(
     For each message_id:
     1. Fetch full email content from Gmail.
     2. Summarize with GPT-4o-mini.
-    3. Embed the summary with all-MiniLM-L6-v2.
-    4. Store embedding + metadata in FAISS.
+    3. Store document with integrated embeddings in vector store.
     Returns per-message results.
     """
     print(f"[Terminal Log] [Summarize] Action: Summarize {len(body.message_ids)} emails requested by {user.get('email')} (force={body.force})")
@@ -311,7 +313,7 @@ async def summarize_email_club(
 ):
     """
     Summarize a club/group of multiple message_ids together into a single executive summary.
-    Stores the single combined summary in FAISS and maps it in the Knowledge Graph.
+    Stores the single combined summary and maps it in the Knowledge Graph.
     """
     if not body.message_ids:
         raise HTTPException(status_code=400, detail="No message IDs provided to club.")
@@ -348,7 +350,7 @@ async def summarize_email_club(
     consolidated_subject = f"✦ [Thread Summary - {count} Emails] {first_subj}"
     combined_from = ", ".join(list(senders)[:2]) + (f" (+{len(senders)-2} more)" if len(senders) > 2 else "")
 
-    # Store in FAISS
+    # Store in vector store
     uid = user.get("uid", "")
     vector_store.add_document({
         "message_id": club_id,
@@ -402,13 +404,12 @@ async def summarize_email_club(
 @router.get("/summaries")
 async def get_summaries(user: dict = Depends(get_current_user)):
     """
-    Return all stored email summaries from the FAISS metadata store.
-    Optionally filter by the requesting user's UID.
+    Return all stored email summaries from the vector store metadata.
+    Filtered by the requesting user's UID.
     """
     uid = user.get("uid", "")
     all_summaries = vector_store.get_all_summaries()
 
-    # Filter to this user's summaries only
     user_summaries = [s for s in all_summaries if s.get("uid") == uid]
 
     return {"summaries": user_summaries}
@@ -460,7 +461,6 @@ async def get_thread_route(
     """
     Retrieve and parse all messages in a specific email thread.
     """
-    import httpx
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://gmail.googleapis.com/gmail/v1/users/me/threads/{body.thread_id}",
@@ -528,11 +528,6 @@ async def get_attachment_route(
     """
     Fetch and decode an attachment by ID from Gmail API, and cache/archive to Cloudflare R2.
     """
-    import base64
-    import httpx
-    from fastapi.responses import Response
-    from services import r2_service
-
     uid = user.get("uid", "")
     
     async with httpx.AsyncClient() as client:
@@ -574,8 +569,6 @@ async def get_calendar_events(user: dict = Depends(get_current_user)):
     """
     Fetch user-specific calendar events array.
     """
-    import json
-    import os
     uid = user["uid"]
     calendar_dir = "server/data/calendar"
     os.makedirs(calendar_dir, exist_ok=True)
@@ -594,8 +587,6 @@ async def save_calendar_events(events: list = Body(...), user: dict = Depends(ge
     """
     Overwrite user-specific calendar events.
     """
-    import json
-    import os
     uid = user["uid"]
     calendar_dir = "server/data/calendar"
     os.makedirs(calendar_dir, exist_ok=True)
@@ -642,18 +633,13 @@ async def generate_draft(body: EmailDraftRequest, user: dict = Depends(get_curre
                 sig.append(user_prof["company_name"])
             if user_prof.get("phone_number"):
                 sig.append(user_prof["phone_number"])
-                        
-                        signature_str = "\n".join(sig)
-                        if "body" in draft and "[Sender]" in draft["body"]:
-                            draft["body"] = draft["body"].replace("[Sender]", signature_str)
-                        elif "body" in draft:
-                            draft["body"] = draft["body"] + "\n\n" + signature_str
-            except Exception as pe:
-                print(f"[DraftProfileReplace] Failed to apply profile signature: {pe}")
-                
+
+            signature_str = "\n".join(sig)
+            if "body" in draft and "[Sender]" in draft["body"]:
+                draft["body"] = draft["body"].replace("[Sender]", signature_str)
+            elif "body" in draft:
+                draft["body"] = draft["body"] + "\n\n" + signature_str
+
         return {"status": "success", "draft": draft}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Drafting failed: {e}")
-
-
-
