@@ -53,7 +53,7 @@ def add_document(metadata: dict) -> str:
 
     # Upsert document into Pinecone with automatic integrated embedding
     try:
-        idx.documents.upsert(
+        res = idx.documents.upsert(
             namespace=uid,
             documents=[{
                 "_id": doc_id,
@@ -61,8 +61,22 @@ def add_document(metadata: dict) -> str:
                 "chunk_text": chunk_text
             }]
         )
+        print(f"[VectorStore] Successfully upserted doc '{doc_id}' to Pinecone namespace '{uid}': {res}")
     except Exception as e:
-        print(f"[VectorStore] Error upserting to Pinecone: {e}")
+        print(f"[VectorStore] Error upserting to Pinecone (documents.upsert): {e}")
+        # Fallback to upsert_records if the index was created using create_for_model (Records API)
+        try:
+            res = idx.upsert_records(
+                namespace=uid or "__default__",
+                records=[{
+                    "_id": doc_id,
+                    "title": title,
+                    "chunk_text": chunk_text
+                }]
+            )
+            print(f"[VectorStore] Successfully upserted doc via fallback (upsert_records): {res}")
+        except Exception as e2:
+            print(f"[VectorStore] Fallback upsert_records also failed: {e2}")
 
     # Persist metadata record in MongoDB Atlas
     try:
