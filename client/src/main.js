@@ -298,9 +298,27 @@ function renderAttachmentPreviews() {
     chip.className = 'attachment-chip';
     chip.innerHTML = `
       <span>📎</span>
-      <span class="attachment-chip-name" title="${file.name}">${file.name}</span>
+      <span class="attachment-chip-name" title="Click to preview ${file.name}" style="cursor:pointer;">${file.name}</span>
       <button type="button" class="remove-file-btn" data-index="${idx}">&times;</button>
     `;
+
+    chip.querySelector('.attachment-chip-name').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const objUrl = URL.createObjectURL(file);
+      if (activePreviewBlobUrl) {
+        try { URL.revokeObjectURL(activePreviewBlobUrl); } catch (_) {}
+      }
+      activePreviewBlobUrl = objUrl;
+      openFilePreview({
+        name: file.name,
+        url: objUrl,
+        downloadUrl: objUrl,
+        contentType: file.type,
+        size: file.size,
+        meta: `${formatAttachmentSize(file.size)} · Outgoing File`,
+        blob: file
+      });
+    });
     
     chip.querySelector('.remove-file-btn').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -500,11 +518,71 @@ function openEmailDetailModal(email, card) {
     if (modalSummarizeBtn) modalSummarizeBtn.classList.remove('hidden');
   }
 
+  // Populate attachments section
+  const attSection = document.getElementById('modal-attachments-section');
+  const attCount = document.getElementById('modal-attachments-count');
+  const attList = document.getElementById('modal-attachments-list');
+  const attachments = email.attachments || [];
+
+  if (attSection && attCount && attList) {
+    if (attachments.length > 0) {
+      attSection.classList.remove('hidden');
+      attCount.textContent = attachments.length;
+      attList.innerHTML = '';
+
+      attachments.forEach(att => {
+        const item = document.createElement('div');
+        item.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:6px; gap:10px;';
+        
+        const ext = (att.filename.split('.').pop() || '').toUpperCase();
+        const sizeStr = att.size ? formatAttachmentSize(att.size) : '';
+
+        item.innerHTML = `
+          <div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">
+            <span style="font-size:10px; font-weight:700; background:rgba(255,255,255,0.08); padding:2px 5px; border-radius:3px; color:var(--text-secondary);">${escHtml(ext || 'FILE')}</span>
+            <div style="min-width:0;">
+              <div style="font-size:12.5px; font-weight:500; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(att.filename)}">${escHtml(att.filename)}</div>
+              ${sizeStr ? `<span style="font-size:11px; color:var(--text-muted);">${sizeStr}</span>` : ''}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            <button type="button" class="btn btn-secondary btn-sm btn-preview-att" style="height:28px; padding:0 10px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              Preview
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm btn-download-att" title="Download" style="height:28px; padding:0 8px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; color:var(--text-muted);">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+          </div>
+        `;
+
+        item.querySelector('.btn-preview-att').addEventListener('click', (e) => {
+          e.stopPropagation();
+          previewAttachment(email.id, att.attachmentId, att.filename, email.from, email.subject);
+        });
+
+        item.querySelector('.btn-download-att').addEventListener('click', (e) => {
+          e.stopPropagation();
+          downloadAttachment(email.id, att.attachmentId, att.filename);
+        });
+
+        attList.appendChild(item);
+      });
+    } else {
+      attSection.classList.add('hidden');
+      attList.innerHTML = '';
+    }
+  }
+
   if (emailDetailModal) emailDetailModal.classList.remove('hidden');
 }
 
 function closeEmailDetailModal() {
   if (emailDetailModal) emailDetailModal.classList.add('hidden');
+  const attSection = document.getElementById('modal-attachments-section');
+  if (attSection) attSection.classList.add('hidden');
+  const attList = document.getElementById('modal-attachments-list');
+  if (attList) attList.innerHTML = '';
   activeModalEmail = null;
   activeModalCard  = null;
 }
@@ -1367,13 +1445,23 @@ async function openReplyModal(alert) {
             attachmentsHtml = `<div class="msg-attachments-container" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">`;
             attachments.forEach(att => {
               attachmentsHtml += `
-                <button class="btn btn-ghost btn-xs attachment-download-btn" 
-                        style="padding:4px 8px; font-size:11.5px; background:rgba(255,255,255,0.05); border:1px solid var(--border-subtle); display:flex; align-items:center; gap:4px; border-radius:var(--radius-sm); color:var(--text-primary); cursor:pointer;"
-                        data-msg-id="${msg.id}" 
-                        data-attachment-id="${att.attachmentId}" 
-                        data-filename="${att.filename}">
-                  📎 ${escHtml(att.filename)}
-                </button>
+                <div style="display:inline-flex; align-items:center; background:rgba(255,255,255,0.05); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); overflow:hidden;">
+                  <button type="button" class="btn btn-ghost btn-xs thread-att-preview-btn" 
+                          style="padding:4px 8px; font-size:11.5px; display:flex; align-items:center; gap:4px; color:var(--text-primary); cursor:pointer; border:none; background:transparent;"
+                          data-msg-id="${msg.id}" 
+                          data-attachment-id="${att.attachmentId}" 
+                          data-filename="${escHtml(att.filename)}">
+                    📎 ${escHtml(att.filename)}
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-xs thread-att-download-btn" 
+                          title="Download file"
+                          style="padding:4px 6px; font-size:11.5px; border-left:1px solid var(--border-subtle); color:var(--text-muted); cursor:pointer; border-top:none; border-bottom:none; border-right:none; background:transparent;"
+                          data-msg-id="${msg.id}" 
+                          data-attachment-id="${att.attachmentId}" 
+                          data-filename="${escHtml(att.filename)}">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  </button>
+                </div>
               `;
             });
             attachmentsHtml += `</div>`;
@@ -1388,8 +1476,19 @@ async function openReplyModal(alert) {
             ${attachmentsHtml}
           `;
           
-          // Wire up download click listeners
-          item.querySelectorAll('.attachment-download-btn').forEach(btn => {
+          // Wire up preview & download click listeners
+          item.querySelectorAll('.thread-att-preview-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              previewAttachment(
+                btn.dataset.msgId,
+                btn.dataset.attachmentId,
+                btn.dataset.filename,
+                msg.from || '',
+                ''
+              );
+            });
+          });
+          item.querySelectorAll('.thread-att-download-btn').forEach(btn => {
             btn.addEventListener('click', () => {
               downloadAttachment(
                 btn.dataset.msgId,
@@ -1918,11 +2017,262 @@ async function saveScratchpadContent(isSilent = false) {
   }
 }
 
+let activePreviewBlobUrl = null;
+
+function formatAttachmentSize(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+function closeFilePreview() {
+  const modal = document.getElementById('file-preview-modal');
+  if (modal) modal.classList.add('hidden');
+  const body = document.getElementById('file-preview-body');
+  if (body) body.innerHTML = '';
+  if (activePreviewBlobUrl) {
+    try {
+      URL.revokeObjectURL(activePreviewBlobUrl);
+    } catch (_) {}
+    activePreviewBlobUrl = null;
+  }
+}
+
+// Wire preview modal backdrop and close buttons
+const closeFilePreviewBtn = document.getElementById('close-file-preview-btn');
+if (closeFilePreviewBtn) {
+  closeFilePreviewBtn.addEventListener('click', closeFilePreview);
+}
+const filePreviewModalEl = document.getElementById('file-preview-modal');
+if (filePreviewModalEl) {
+  filePreviewModalEl.addEventListener('click', (e) => {
+    if (e.target === filePreviewModalEl) closeFilePreview();
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && filePreviewModalEl && !filePreviewModalEl.classList.contains('hidden')) {
+    closeFilePreview();
+  }
+});
+
+async function openFilePreview({ name = 'File Preview', url, downloadUrl, contentType = '', size = null, meta = '', blob = null }) {
+  const modal = document.getElementById('file-preview-modal');
+  const iconEl = document.getElementById('preview-file-icon');
+  const filenameEl = document.getElementById('preview-filename');
+  const metaEl = document.getElementById('preview-file-meta');
+  const openTabBtn = document.getElementById('preview-open-tab-btn');
+  const downloadBtn = document.getElementById('preview-download-btn');
+  const bodyEl = document.getElementById('file-preview-body');
+
+  if (!modal || !bodyEl) return;
+
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const cType = (contentType || '').toLowerCase();
+
+  let badgeText = 'DOC';
+  let badgeColor = 'var(--text-muted)';
+  if (ext === 'pdf' || cType.includes('pdf')) {
+    badgeText = 'PDF';
+    badgeColor = '#ef4444';
+  } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext) || cType.startsWith('image/')) {
+    badgeText = 'IMG';
+    badgeColor = '#a855f7';
+  } else if (['txt', 'csv', 'json', 'js', 'py', 'html', 'css', 'xml', 'log', 'md', 'yml', 'yaml', 'sh', 'env', 'tsv'].includes(ext) || cType.startsWith('text/') || cType.includes('json')) {
+    badgeText = 'TXT';
+    badgeColor = '#3b82f6';
+  } else if (['mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'm4a'].includes(ext) || cType.startsWith('video/') || cType.startsWith('audio/')) {
+    badgeText = 'MEDIA';
+    badgeColor = '#f59e0b';
+  }
+
+  if (iconEl) {
+    iconEl.textContent = badgeText;
+    iconEl.style.color = badgeColor;
+  }
+  if (filenameEl) filenameEl.textContent = name;
+  if (metaEl) {
+    const sizePart = size ? formatAttachmentSize(size) : '';
+    metaEl.textContent = meta || [badgeText, sizePart].filter(Boolean).join(' · ') || 'Preview';
+  }
+
+  if (openTabBtn) {
+    openTabBtn.href = url || '#';
+    openTabBtn.style.display = url ? 'inline-flex' : 'none';
+  }
+  if (downloadBtn) {
+    downloadBtn.href = downloadUrl || url || '#';
+    downloadBtn.setAttribute('download', name);
+    downloadBtn.style.display = (downloadUrl || url) ? 'inline-flex' : 'none';
+  }
+
+  modal.classList.remove('hidden');
+  bodyEl.innerHTML = '';
+
+  // 1. PDF viewer
+  if (ext === 'pdf' || cType.includes('pdf')) {
+    bodyEl.innerHTML = `
+      <iframe src="${url}#toolbar=1&navpanes=0" title="${escHtml(name)}" style="width:100%; height:100%; border:none; background:#262626;"></iframe>
+    `;
+    return;
+  }
+
+  // 2. Images viewer
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext) || cType.startsWith('image/')) {
+    bodyEl.innerHTML = `
+      <div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; overflow:auto; padding:24px; box-sizing:border-box;">
+        <img src="${url}" alt="${escHtml(name)}" style="max-width:100%; max-height:100%; object-fit:contain; border-radius:6px; box-shadow:0 12px 36px rgba(0,0,0,0.6); background:rgba(0,0,0,0.2);">
+      </div>
+    `;
+    return;
+  }
+
+  // 3. Audio & Video viewer
+  if (['mp4', 'webm', 'mov'].includes(ext) || cType.startsWith('video/')) {
+    bodyEl.innerHTML = `
+      <div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">
+        <video controls autoplay muted src="${url}" style="max-width:92%; max-height:88%; border-radius:8px; box-shadow:0 12px 36px rgba(0,0,0,0.7); outline:none;"></video>
+      </div>
+    `;
+    return;
+  }
+  if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext) || cType.startsWith('audio/')) {
+    bodyEl.innerHTML = `
+      <div style="width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; padding:24px; box-sizing:border-box;">
+        <div style="font-size:48px;">🎵</div>
+        <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${escHtml(name)}</div>
+        <audio controls autoplay src="${url}" style="width:85%; max-width:480px;"></audio>
+      </div>
+    `;
+    return;
+  }
+
+  // 4. Text / Code / JSON / CSV viewer
+  if (['txt', 'csv', 'json', 'js', 'py', 'html', 'css', 'xml', 'log', 'md', 'yml', 'yaml', 'sh', 'env', 'tsv'].includes(ext) || cType.startsWith('text/') || cType.includes('json')) {
+    bodyEl.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center; gap:12px; padding:40px;">
+        <div class="spinner"></div>
+        <span style="font-size:13px; color:var(--text-muted);">Reading file content...</span>
+      </div>
+    `;
+    try {
+      let textContent = '';
+      if (blob) {
+        textContent = await blob.text();
+      } else {
+        const textResp = await fetch(url);
+        textContent = await textResp.text();
+      }
+      bodyEl.innerHTML = `
+        <div style="width:100%; height:100%; overflow:auto; padding:24px; box-sizing:border-box; background:rgba(0,0,0,0.25); text-align:left;">
+          <pre style="font-family:var(--font-mono, 'JetBrains Mono', Consolas, monospace); font-size:12.5px; line-height:1.6; color:var(--text-primary); margin:0; white-space:pre-wrap; word-break:break-word;">${escHtml(textContent)}</pre>
+        </div>
+      `;
+    } catch (txtErr) {
+      bodyEl.innerHTML = `
+        <div style="text-align:center; padding:40px 20px;">
+          <p style="color:var(--text-muted); font-size:13px;">Unable to render text directly. You can open in a new tab or download the file.</p>
+        </div>
+      `;
+    }
+    return;
+  }
+
+  // 5. Unsupported binary fallback
+  bodyEl.innerHTML = `
+    <div style="text-align:center; padding:40px 20px; max-width:480px; margin:auto;">
+      <div style="font-size:48px; margin-bottom:16px;">📄</div>
+      <h4 style="font-size:16px; font-weight:600; margin:0 0 8px 0; color:var(--text-primary);">${escHtml(name)}</h4>
+      <p style="font-size:13px; color:var(--text-muted); line-height:1.6; margin-bottom:24px;">
+        This file format (${(ext || 'binary').toUpperCase()}) cannot be rendered directly inside the browser. You can download it or open in an external application.
+      </p>
+      <a href="${downloadUrl || url}" download="${escHtml(name)}" class="btn btn-primary" style="display:inline-flex; align-items:center; gap:6px; text-decoration:none; padding:8px 18px; font-size:13px; border-radius:6px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download File
+      </a>
+    </div>
+  `;
+}
+
+async function previewAttachment(messageId, attachmentId, filename, sender = '', subject = '') {
+  openFilePreview({
+    name: filename || 'Attachment',
+    url: '',
+    downloadUrl: '',
+    meta: 'Loading attachment…'
+  });
+
+  const bodyEl = document.getElementById('file-preview-body');
+  if (bodyEl) {
+    bodyEl.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center; gap:12px; padding:40px;">
+        <div class="spinner"></div>
+        <span style="font-size:13px; color:var(--text-muted);">Fetching attachment from Gmail & R2…</span>
+      </div>
+    `;
+  }
+
+  try {
+    idToken = await currentUser.getIdToken();
+    await getOrRefreshOauthToken();
+    const url = `/api/emails/attachment/${messageId}/${attachmentId}?filename=${encodeURIComponent(filename)}&oauth_token=${oauthToken}&inline=true&sender=${encodeURIComponent(sender || '')}&subject=${encodeURIComponent(subject || '')}`;
+    
+    const resp = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${idToken}` }
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || 'Failed to fetch attachment');
+    }
+
+    const contentType = resp.headers.get('content-type') || '';
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    if (activePreviewBlobUrl) {
+      try { URL.revokeObjectURL(activePreviewBlobUrl); } catch (_) {}
+    }
+    activePreviewBlobUrl = blobUrl;
+
+    await openFilePreview({
+      name: filename,
+      url: blobUrl,
+      downloadUrl: blobUrl,
+      contentType,
+      size: blob.size,
+      meta: `${formatAttachmentSize(blob.size)} · Gmail Attachment`,
+      blob
+    });
+  } catch (err) {
+    if (bodyEl) {
+      bodyEl.innerHTML = `
+        <div style="text-align:center; padding:40px 20px;">
+          <p style="color:var(--text-error, #ef4444); font-size:13.5px; margin-bottom:12px;">Failed to load attachment: ${escHtml(err.message)}</p>
+          <button class="btn btn-secondary btn-sm" onclick="closeFilePreview()">Close</button>
+        </div>
+      `;
+    }
+    showToast(err.message || 'Failed to load attachment', 'error');
+  }
+}
+
+function handlePreviewR2Document(doc) {
+  if (!doc) return;
+  const targetUrl = doc.preview_url || doc.download_url;
+  openFilePreview({
+    name: doc.filename || 'document',
+    url: targetUrl,
+    downloadUrl: doc.download_url || targetUrl,
+    contentType: doc.content_type || '',
+    size: doc.size_bytes || null,
+    meta: `${doc.direction === 'outgoing' ? 'Sent file' : 'Received file'} · Cloudflare R2`
+  });
+}
+
 async function downloadAttachment(messageId, attachmentId, filename) {
   try {
     idToken = await currentUser.getIdToken();
     await getOrRefreshOauthToken();
-    const url = `/api/emails/attachment/${messageId}/${attachmentId}?filename=${encodeURIComponent(filename)}&oauth_token=${oauthToken}`;
+    const url = `/api/emails/attachment/${messageId}/${attachmentId}?filename=${encodeURIComponent(filename)}&oauth_token=${oauthToken}&inline=false`;
     
     const resp = await fetch(url, {
       headers: { 'Authorization': `Bearer ${idToken}` }
@@ -4476,7 +4826,7 @@ function filterAndRenderR2Documents() {
     );
   }
 
-  renderR2Documents(docs, handleDeleteR2Document);
+  renderR2Documents(docs, handleDeleteR2Document, handlePreviewR2Document);
 }
 
 async function handleDeleteR2Document(key, cardEl) {

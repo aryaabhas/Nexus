@@ -997,6 +997,14 @@
             <div class="inspector-label" style="margin-bottom:8px;">Full Email Message</div>
             <div id="modal-email-body" class="email-full-body-text"></div>
           </div>
+          <!-- Email Attachments Section -->
+          <div id="modal-attachments-section" class="hidden" style="border-top:1px solid var(--border-subtle); padding-top:12px;">
+            <div class="inspector-label" style="margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              Attachments (<span id="modal-attachments-count">0</span>)
+            </div>
+            <div id="modal-attachments-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+          </div>
         </div>
         <div class="compose-footer" style="justify-content:space-between">
           <button id="modal-summarize-btn" class="btn btn-secondary btn-sm">✦ Summarize This Email</button>
@@ -1400,6 +1408,41 @@
           <button id="crm-int-cancel-btn" class="btn btn-ghost btn-sm">Cancel</button>
           <button id="crm-int-save-btn" class="btn btn-primary btn-sm">💾 Log Touchpoint</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Universal In-Browser Document & Attachment Previewer Modal -->
+    <div id="file-preview-modal" class="compose-modal-backdrop hidden" style="z-index: 10000;">
+      <div class="compose-modal-card glass-card" style="width: 92vw; max-width: 1100px; height: 88vh; max-height: 88vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,0.6);">
+        
+        <!-- Preview Modal Header -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-elevated); min-height: 52px; gap: 12px;">
+          <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <div id="preview-file-icon" style="width: 32px; height: 32px; border-radius: 6px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; flex-shrink: 0;">DOC</div>
+            <div style="min-width: 0;">
+              <h3 id="preview-filename" style="margin: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">filename.pdf</h3>
+              <span id="preview-file-meta" style="font-size: 11px; color: var(--text-muted);">Preview Document</span>
+            </div>
+          </div>
+          
+          <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            <a id="preview-open-tab-btn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="height: 30px; padding: 0 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; text-decoration: none;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Open in Tab
+            </a>
+            <a id="preview-download-btn" href="#" download="" class="btn btn-secondary btn-sm" style="height: 30px; padding: 0 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; text-decoration: none;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download
+            </a>
+            <button id="close-file-preview-btn" class="close-btn" style="position: static; font-size: 20px; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer;">&times;</button>
+          </div>
+        </div>
+
+        <!-- Preview Modal Body (dynamic viewer) -->
+        <div id="file-preview-body" style="flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; background: var(--bg-base); position: relative;">
+          <!-- Dynamically injected iframe, img, or text viewer -->
+        </div>
+
       </div>
     </div>
 

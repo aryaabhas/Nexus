@@ -547,12 +547,14 @@ async def get_attachment_route(
     attachment_id: str,
     filename: str,
     oauth_token: str,
+    inline: bool = True,
     sender: str = "",
     subject: str = "",
     user: dict = Depends(get_current_user)
 ):
     """
     Fetch and decode an attachment by ID from Gmail API, and cache/archive to Cloudflare R2.
+    Supports inline=True for direct in-browser viewing/previewing without downloading.
     """
     uid = user.get("uid", "")
     
@@ -560,7 +562,7 @@ async def get_attachment_route(
         resp = await client.get(
             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{attachment_id}",
             headers={"Authorization": f"Bearer {oauth_token}"},
-            timeout=15
+            timeout=20
         )
         if resp.status_code != 200:
             raise HTTPException(status_code=resp.status_code, detail="Failed to fetch attachment from Gmail.")
@@ -571,13 +573,18 @@ async def get_attachment_route(
         # Decode base64url encoded attachment payload
         file_bytes = base64.urlsafe_b64decode(raw_data)
         
-        # Archive copy to Cloudflare R2 under user namespace
+        # Detect proper MIME type from filename
+        import mimetypes
+        guessed_type, _ = mimetypes.guess_type(filename)
+        mime_type = guessed_type or "application/octet-stream"
+
+        # Archive copy to Cloudflare R2 under user namespace with proper content_type
         try:
             key = r2_service.upload_file_bytes(
                 uid=uid,
                 filename=f"{message_id}_{filename}",
                 file_bytes=file_bytes,
-                content_type="application/octet-stream",
+                content_type=mime_type,
                 subfolder="incoming"
             )
             r2_service.record_document_metadata(
@@ -588,16 +595,17 @@ async def get_attachment_route(
                 associated_email=sender,
                 subject=subject,
                 size_bytes=len(file_bytes),
-                content_type="application/octet-stream",
+                content_type=mime_type,
                 message_id=message_id
             )
         except Exception as r2_err:
             print(f"[R2Storage] Incoming attachment archive failed: {r2_err}")
         
+        disposition = "inline" if inline else "attachment"
         return Response(
             content=file_bytes,
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            media_type=mime_type,
+            headers={"Content-Disposition": f'{disposition}; filename="{filename}"'}
         )
 
 

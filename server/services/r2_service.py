@@ -48,13 +48,28 @@ def upload_file_bytes(
     return key
 
 
-def get_presigned_download_url(key: str, expires_in: int = 3600) -> str:
+def get_presigned_download_url(key: str, expires_in: int = 3600, inline: bool = False) -> str:
     """
-    Generates a secure temporary presigned download URL (valid for 1 hour by default).
+    Generates a secure temporary presigned download or preview URL (valid for specified duration).
+    If inline=True, sets ResponseContentDisposition to 'inline' so browser displays rather than forces download.
     """
+    import mimetypes
+    params = {"Bucket": R2_BUCKET_NAME, "Key": key}
+    filename = os.path.basename(key)
+    guessed_type, _ = mimetypes.guess_type(filename)
+
+    if inline:
+        params["ResponseContentDisposition"] = f'inline; filename="{filename}"'
+        if guessed_type:
+            params["ResponseContentType"] = guessed_type
+    else:
+        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+        if guessed_type:
+            params["ResponseContentType"] = guessed_type
+
     return s3_client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": R2_BUCKET_NAME, "Key": key},
+        Params=params,
         ExpiresIn=expires_in
     )
 
@@ -184,10 +199,12 @@ def list_user_documents(
                 associated_email = meta.get("associated_email", "")
                 subject = meta.get("subject", "Email Attachment")
 
-                # Generate fresh presigned download URL
+                # Generate fresh presigned preview and download URLs
                 try:
-                    download_url = get_presigned_download_url(key, expires_in=7200)
+                    preview_url = get_presigned_download_url(key, expires_in=7200, inline=True)
+                    download_url = get_presigned_download_url(key, expires_in=7200, inline=False)
                 except Exception:
+                    preview_url = ""
                     download_url = ""
 
                 documents.append({
@@ -198,6 +215,7 @@ def list_user_documents(
                     "subject": subject,
                     "size_bytes": size_bytes or meta.get("size_bytes", 0),
                     "date": date_str or meta.get("created_at", ""),
+                    "preview_url": preview_url,
                     "download_url": download_url
                 })
     except Exception as e:
@@ -205,8 +223,10 @@ def list_user_documents(
         # If R2 listing fails, fallback to Mongo records with presigned URLs
         for key, meta in mongo_records.items():
             try:
-                d_url = get_presigned_download_url(key, expires_in=7200)
+                p_url = get_presigned_download_url(key, expires_in=7200, inline=True)
+                d_url = get_presigned_download_url(key, expires_in=7200, inline=False)
             except Exception:
+                p_url = ""
                 d_url = ""
             documents.append({
                 "key": key,
@@ -216,6 +236,7 @@ def list_user_documents(
                 "subject": meta.get("subject", ""),
                 "size_bytes": meta.get("size_bytes", 0),
                 "date": meta.get("created_at", ""),
+                "preview_url": p_url,
                 "download_url": d_url
             })
 

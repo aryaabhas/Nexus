@@ -78,6 +78,12 @@ export function renderEmailList(emails, onSummarize, onSelectChange, onOpenDetai
         </div>
         <h3 class="email-subject">${escHtml(email.subject || '(No subject)')}</h3>
         <p class="email-snippet">${escHtml(email.snippet || '')}</p>
+        ${(email.attachments && email.attachments.length > 0) ? `
+          <div style="display:inline-flex; align-items:center; gap:5px; margin-top:6px; font-size:11.5px; color:var(--text-muted); background:rgba(255,255,255,0.04); padding:2px 8px; border-radius:4px; border:1px solid var(--border-subtle);">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            ${email.attachments.length} ${email.attachments.length === 1 ? 'attachment' : 'attachments'}
+          </div>
+        ` : ''}
       </div>
       <div class="email-card-footer">
         <button class="btn btn-summarize ${email.is_summarized ? 'hidden' : ''}" data-id="${email.id}">
@@ -394,7 +400,7 @@ export function renderActivityLogs(logs) {
 }
 
 // ── Render Cloudflare R2 Documents ───────────────────────────────────────────
-export function renderR2Documents(documents, onDelete) {
+export function renderR2Documents(documents, onDelete, onPreview) {
   const container = document.getElementById('r2-documents-grid');
   if (!container) return;
   container.innerHTML = '';
@@ -463,6 +469,10 @@ export function renderR2Documents(documents, onDelete) {
       <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 10px; margin-top: 4px;">
         <span style="font-size: 11px; color: var(--text-muted);">${formatDate(doc.date)}</span>
         <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="btn btn-secondary btn-sm btn-preview-r2" style="padding: 4px 10px; font-size: 12px; font-weight: 500; height: 28px; display: inline-flex; align-items: center; gap: 5px;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            Preview
+          </button>
           ${doc.download_url ? `
             <a href="${doc.download_url}" target="_blank" rel="noopener noreferrer" download="${escHtml(doc.filename)}" class="btn btn-primary btn-sm" style="text-decoration: none; padding: 4px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
               ⬇️ Download
@@ -476,6 +486,14 @@ export function renderR2Documents(documents, onDelete) {
         </div>
       </div>
     `;
+
+    const previewBtn = card.querySelector('.btn-preview-r2');
+    if (previewBtn && onPreview) {
+      previewBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onPreview(doc);
+      });
+    }
 
     const deleteBtn = card.querySelector('.btn-delete-r2');
     if (deleteBtn && onDelete) {
