@@ -109,12 +109,22 @@ async def send_email_route(
                 if file.filename:
                     mime_attachments.append((file.filename, content, file.content_type))
                     try:
-                        r2_service.upload_file_bytes(
+                        key = r2_service.upload_file_bytes(
                             uid=uid,
                             filename=file.filename,
                             file_bytes=content,
                             content_type=file.content_type or "application/octet-stream",
                             subfolder="outgoing"
+                        )
+                        r2_service.record_document_metadata(
+                            uid=uid,
+                            key=key,
+                            filename=file.filename,
+                            direction="outgoing",
+                            associated_email=to,
+                            subject=subject,
+                            size_bytes=len(content),
+                            content_type=file.content_type or "application/octet-stream"
                         )
                     except Exception as r2_err:
                         print(f"[R2Storage] Outgoing upload failed for {file.filename}: {r2_err}")
@@ -537,6 +547,8 @@ async def get_attachment_route(
     attachment_id: str,
     filename: str,
     oauth_token: str,
+    sender: str = "",
+    subject: str = "",
     user: dict = Depends(get_current_user)
 ):
     """
@@ -561,12 +573,23 @@ async def get_attachment_route(
         
         # Archive copy to Cloudflare R2 under user namespace
         try:
-            r2_service.upload_file_bytes(
+            key = r2_service.upload_file_bytes(
                 uid=uid,
                 filename=f"{message_id}_{filename}",
                 file_bytes=file_bytes,
                 content_type="application/octet-stream",
                 subfolder="incoming"
+            )
+            r2_service.record_document_metadata(
+                uid=uid,
+                key=key,
+                filename=filename,
+                direction="incoming",
+                associated_email=sender,
+                subject=subject,
+                size_bytes=len(file_bytes),
+                content_type="application/octet-stream",
+                message_id=message_id
             )
         except Exception as r2_err:
             print(f"[R2Storage] Incoming attachment archive failed: {r2_err}")
@@ -576,6 +599,122 @@ async def get_attachment_route(
             media_type="application/octet-stream",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
+
+
+@router.get("/documents")
+async def get_r2_documents(
+    direction: str = "all",
+    email_filter: str = "",
+    user: dict = Depends(get_current_user)
+):
+    """
+    List all documents stored in Cloudflare R2 for the user,
+    filtered by direction ('all', 'incoming', 'outgoing') and associated email.
+    """
+    uid = user.get("uid", "")
+    try:
+        docs = r2_service.list_user_documents(
+            uid=uid,
+            direction=direction,
+            email_filter=email_filter
+        )
+        return {"documents": docs, "total": len(docs)}
+    except Exception as e:
+        print(f"[R2Error] Failed to list documents: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {e}")
+
+
+@router.delete("/documents")
+async def delete_r2_document(
+    key: str = Body(..., embed=True),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Delete a document from Cloudflare R2 and the MongoDB ledger.
+    """
+    uid = user.get("uid", "")
+    try:
+        r2_service.delete_user_document(uid=uid, key=key)
+        return {"status": "deleted", "key": key}
+    except PermissionError as pe:
+        raise HTTPException(status_code=403, detail=str(pe))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {e}")
+
+
+class SyncAttachmentsRequest(BaseModel):
+    oauth_token: str
+    max_emails: int = 30
+
+
+@router.post("/documents/sync_inbox")
+async def sync_inbox_attachments(
+    body: SyncAttachmentsRequest,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Scan recent inbox emails for attachments, download them from Gmail,
+    and archive them directly to Cloudflare R2 under users/{uid}/incoming/.
+    """
+    uid = user.get("uid", "")
+    synced_count = 0
+    try:
+        messages_meta = gmail_service.fetch_inbox_messages(body.oauth_token, max_results=body.max_emails)
+        for meta in messages_meta:
+            msg_id = meta.get("id")
+            if not msg_id:
+                continue
+            try:
+                raw_msg = gmail_service.fetch_full_message(body.oauth_token, msg_id)
+                parsed = gmail_service.extract_email_content(raw_msg)
+                sender = parsed.get("from", "")
+                subject = parsed.get("subject", "")
+                attachments = parsed.get("attachments", [])
+
+                for att in attachments:
+                    att_id = att.get("attachmentId")
+                    att_name = att.get("filename")
+                    att_size = att.get("size", 0)
+                    if not att_id or not att_name:
+                        continue
+
+                    r2_key = f"users/{uid}/incoming/{msg_id}_{att_name}"
+
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(
+                            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}",
+                            headers={"Authorization": f"Bearer {body.oauth_token}"},
+                            timeout=20
+                        )
+                        if resp.status_code == 200:
+                            raw_b64 = resp.json().get("data", "")
+                            f_bytes = base64.urlsafe_b64decode(raw_b64)
+                            r2_service.upload_file_bytes(
+                                uid=uid,
+                                filename=f"{msg_id}_{att_name}",
+                                file_bytes=f_bytes,
+                                content_type=att.get("mimeType", "application/octet-stream"),
+                                subfolder="incoming"
+                            )
+                            r2_service.record_document_metadata(
+                                uid=uid,
+                                key=r2_key,
+                                filename=att_name,
+                                direction="incoming",
+                                associated_email=sender,
+                                subject=subject,
+                                size_bytes=len(f_bytes) or att_size,
+                                content_type=att.get("mimeType", "application/octet-stream"),
+                                message_id=msg_id
+                            )
+                            synced_count += 1
+            except Exception as e_inner:
+                print(f"[SyncError] Error on message {msg_id}: {e_inner}")
+
+        return {"status": "success", "synced": synced_count}
+    except Exception as e:
+        print(f"[R2SyncError] Failed to sync attachments: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to sync attachments: {e}")
 
 
 @router.get("/calendar")

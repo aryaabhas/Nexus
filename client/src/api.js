@@ -237,3 +237,32 @@ export async function saveScratchpad(idToken, content) {
     body: JSON.stringify({ content }),
   });
 }
+
+/** Fetch all stored documents from Cloudflare R2 */
+export async function getR2Documents(idToken, direction = 'all', emailFilter = '') {
+  const params = new URLSearchParams();
+  if (direction && direction !== 'all') params.append('direction', direction);
+  if (emailFilter) params.append('email_filter', emailFilter);
+  const q = params.toString() ? `?${params.toString()}` : '';
+  return apiFetch(`/emails/documents${q}`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}
+
+/** Delete a document from Cloudflare R2 */
+export async function deleteR2Document(idToken, key) {
+  return apiFetch('/emails/documents', {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ key }),
+  });
+}
+
+/** Sync recent inbox attachments to Cloudflare R2 */
+export async function syncR2InboxAttachments(oauthToken, idToken, maxEmails = 30) {
+  return apiFetch('/emails/documents/sync_inbox', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ oauth_token: oauthToken, max_emails: maxEmails }),
+  });
+}

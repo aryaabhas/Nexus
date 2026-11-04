@@ -176,6 +176,9 @@
               <button class="drawer-nav-item tab-btn" data-tab="calendar"
                 style="text-align:left; width:100%; padding:10px 16px; background:transparent; border:none; color:var(--text-secondary); cursor:pointer; font-size:13.5px; border-left:3px solid transparent;">📅
                 Scheduling</button>
+              <button class="drawer-nav-item tab-btn" data-tab="documents"
+                style="text-align:left; width:100%; padding:10px 16px; background:transparent; border:none; color:var(--text-secondary); cursor:pointer; font-size:13.5px; border-left:3px solid transparent;">📁
+                R2 Cloud Documents</button>
             </div>
           </div>
         </div>
@@ -257,6 +260,9 @@
               <button class="tab-btn dropdown-item" data-tab="calendar" role="tab"
                 style="text-align:left; width:100%; padding:8px 16px; background:transparent; border:none; cursor:pointer;">📅
                 Scheduling</button>
+              <button class="tab-btn dropdown-item" data-tab="documents" role="tab"
+                style="text-align:left; width:100%; padding:8px 16px; background:transparent; border:none; cursor:pointer;">📁
+                R2 Cloud Documents</button>
             </div>
           </div>
           <button id="manual-sync-btn" class="btn btn-secondary"
@@ -472,9 +478,14 @@
               <h2>Stored Summaries</h2>
               <p>All email summaries stored in your local FAISS vector index.</p>
             </div>
-            <button id="refresh-summaries-btn" class="btn btn-secondary">
-              ↻ Refresh
-            </button>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <button id="btn-goto-documents" class="btn btn-secondary" style="display:flex; align-items:center; gap:6px;">
+                📁 R2 Cloud Documents
+              </button>
+              <button id="refresh-summaries-btn" class="btn btn-secondary">
+                ↻ Refresh
+              </button>
+            </div>
           </div>
           <div id="summaries-grid">
             <div class="empty-state">
@@ -800,6 +811,76 @@
               <div id="calendar-sidebar-events-list" style="display:flex; flex-direction:column; gap:8px;">
                 <!-- Event cards rendered by main.js -->
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Panel: R2 Cloud Documents Vault -->
+        <div id="tab-documents" class="tab-panel" role="tabpanel">
+          <div class="panel-header">
+            <div>
+              <h2>📁 Cloudflare R2 Document Vault</h2>
+              <p>Archived incoming email attachments and outgoing sent files with multi-tenant zero-egress cloud storage.</p>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <button id="sync-r2-inbox-btn" class="btn btn-secondary" title="Sync attachments from your Gmail inbox into Cloudflare R2">
+                🔄 Sync Inbox Files
+              </button>
+              <button id="refresh-r2-docs-btn" class="btn btn-primary">
+                ↻ Refresh Vault
+              </button>
+            </div>
+          </div>
+
+          <!-- Document Stats Cards -->
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:20px;">
+            <div class="glass-card" style="padding:14px; border:1px solid var(--border-subtle); display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">📦 Total Stored Files</span>
+              <span id="stat-r2-total" style="font-size:24px; font-weight:800; color:var(--text-primary);">0</span>
+            </div>
+            <div class="glass-card" style="padding:14px; border:1px solid var(--border-subtle); display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:11px; font-weight:700; color:#34d399; text-transform:uppercase;">📥 Received (Incoming)</span>
+              <span id="stat-r2-incoming" style="font-size:24px; font-weight:800; color:#34d399;">0</span>
+            </div>
+            <div class="glass-card" style="padding:14px; border:1px solid var(--border-subtle); display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:11px; font-weight:700; color:#60a5fa; text-transform:uppercase;">📤 Sent (Outgoing)</span>
+              <span id="stat-r2-outgoing" style="font-size:24px; font-weight:800; color:#60a5fa;">0</span>
+            </div>
+            <div class="glass-card" style="padding:14px; border:1px solid var(--border-subtle); display:flex; flex-direction:column; gap:4px;">
+              <span style="font-size:11px; font-weight:700; color:#a78bfa; text-transform:uppercase;">⚡ Cloudflare R2 Egress</span>
+              <span style="font-size:18px; font-weight:800; color:#a78bfa;">$0 Free Bandwidth</span>
+            </div>
+          </div>
+
+          <!-- Filter & Controls Toolbar -->
+          <div class="glass-card" style="padding:14px 18px; margin-bottom:20px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; border:1px solid var(--border-subtle);">
+            <!-- Direction Filters -->
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn btn-secondary btn-sm r2-dir-filter active" data-dir="all" style="font-weight:700; padding:6px 14px; border-radius:6px;">All Files</button>
+              <button class="btn btn-secondary btn-sm r2-dir-filter" data-dir="incoming" style="font-weight:600; padding:6px 14px; border-radius:6px; color:#34d399;">📥 Received</button>
+              <button class="btn btn-secondary btn-sm r2-dir-filter" data-dir="outgoing" style="font-weight:600; padding:6px 14px; border-radius:6px; color:#60a5fa;">📤 Sent</button>
+            </div>
+
+            <!-- Email Filter & Filename Search -->
+            <div style="display:flex; gap:10px; align-items:center; flex:1; max-width:650px; min-width:280px;">
+              <div class="input-wrapper" style="flex:1;">
+                <span class="input-icon">👤</span>
+                <input id="r2-email-filter-input" list="r2-known-emails-datalist" type="search" placeholder="Filter by email address (sender or receiver)..." style="width:100%; padding:8px 12px 8px 34px; font-size:13px;" />
+                <datalist id="r2-known-emails-datalist"></datalist>
+              </div>
+
+              <div class="input-wrapper" style="flex:1;">
+                <span class="input-icon">🔍</span>
+                <input id="r2-search-input" type="search" placeholder="Search filename or subject..." style="width:100%; padding:8px 12px 8px 34px; font-size:13px;" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Documents Grid Container -->
+          <div id="r2-documents-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:16px;">
+            <div class="empty-state" style="grid-column: 1 / -1;">
+              <div class="empty-icon">📁</div>
+              <p>Loading files stored in Cloudflare R2...</p>
             </div>
           </div>
         </div>

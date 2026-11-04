@@ -392,3 +392,99 @@ export function renderActivityLogs(logs) {
   `;
   container.appendChild(table);
 }
+
+// ── Render Cloudflare R2 Documents ───────────────────────────────────────────
+export function renderR2Documents(documents, onDelete) {
+  const container = document.getElementById('r2-documents-grid');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!documents || documents.length === 0) {
+    container.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1; padding: 40px 20px;">
+      <div class="empty-icon">📁</div>
+      <p style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:6px;">No documents found matching this filter.</p>
+      <p style="font-size:13px; color:var(--text-muted);">Incoming email attachments and outgoing sent files will automatically appear here.</p>
+    </div>`;
+    return;
+  }
+
+  documents.forEach(doc => {
+    const card = document.createElement('div');
+    card.className = 'glass-card r2-doc-card';
+    card.style.cssText = 'padding: 16px; border: 1px solid var(--border-subtle); border-radius: 12px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; transition: transform 0.2s ease, box-shadow 0.2s ease;';
+
+    const isIncoming = doc.direction === 'incoming';
+    const directionBadge = isIncoming
+      ? `<span style="background: rgba(52, 211, 153, 0.12); color: #34d399; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(52, 211, 153, 0.25);">📥 Received</span>`
+      : `<span style="background: rgba(96, 165, 250, 0.12); color: #60a5fa; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(96, 165, 250, 0.25);">📤 Sent</span>`;
+
+    const associatedLabel = isIncoming ? 'From' : 'To';
+    const ext = (doc.filename || '').split('.').pop().toLowerCase();
+    let fileIcon = '📄';
+    if (['pdf'].includes(ext)) fileIcon = '📕';
+    else if (['doc', 'docx'].includes(ext)) fileIcon = '📘';
+    else if (['xls', 'xlsx', 'csv'].includes(ext)) fileIcon = '📗';
+    else if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(ext)) fileIcon = '🖼️';
+    else if (['zip', 'rar', 'tar', 'gz', '7z'].includes(ext)) fileIcon = '📦';
+
+    let formattedSize = '';
+    if (doc.size_bytes > 0) {
+      if (doc.size_bytes < 1024 * 1024) {
+        formattedSize = (doc.size_bytes / 1024).toFixed(1) + ' KB';
+      } else {
+        formattedSize = (doc.size_bytes / (1024 * 1024)).toFixed(2) + ' MB';
+      }
+    }
+
+    card.innerHTML = `
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+            <span style="font-size: 24px; line-height: 1;">${fileIcon}</span>
+            <div style="min-width: 0;">
+              <h4 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escHtml(doc.filename)}">
+                ${escHtml(doc.filename)}
+              </h4>
+              ${formattedSize ? `<span style="font-size: 11px; color: var(--text-muted);">${formattedSize}</span>` : ''}
+            </div>
+          </div>
+          ${directionBadge}
+        </div>
+
+        <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          <strong style="color: var(--text-primary);">${associatedLabel}:</strong> ${escHtml(doc.associated_email || 'Inbox / Direct')}
+        </div>
+
+        <div style="font-size: 12px; color: var(--text-muted); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escHtml(doc.subject)}">
+          <strong style="color: var(--text-secondary);">Subject:</strong> ${escHtml(doc.subject || 'Attachment')}
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 10px; margin-top: 4px;">
+        <span style="font-size: 11px; color: var(--text-muted);">${formatDate(doc.date)}</span>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          ${doc.download_url ? `
+            <a href="${doc.download_url}" target="_blank" rel="noopener noreferrer" download="${escHtml(doc.filename)}" class="btn btn-primary btn-sm" style="text-decoration: none; padding: 4px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+              ⬇️ Download
+            </a>
+          ` : `
+            <span style="font-size: 11px; color: var(--text-muted);">No link</span>
+          `}
+          <button class="btn btn-ghost btn-sm btn-delete-r2" data-key="${escHtml(doc.key)}" style="padding: 4px 8px; color: #f87171; border-color: transparent;" title="Delete file from R2">
+            🗑️
+          </button>
+        </div>
+      </div>
+    `;
+
+    const deleteBtn = card.querySelector('.btn-delete-r2');
+    if (deleteBtn && onDelete) {
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onDelete(doc.key, card);
+      });
+    }
+
+    container.appendChild(card);
+  });
+}

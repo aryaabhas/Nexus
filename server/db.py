@@ -20,4 +20,5 @@ threads_collection = db["tracked_threads"]
 graph_collection = db["graph_data"]
 metadata_collection = db["email_metadata"]
 calendar_collection = db["calendar_events"]
+r2_docs_collection = db["r2_documents"]
 

@@ -26,6 +26,9 @@ import {
   getThread,
   getScratchpad,
   saveScratchpad,
+  getR2Documents,
+  deleteR2Document,
+  syncR2InboxAttachments,
 } from './api.js';
 import { GraphVisualizer } from './graph-visualizer.js';
 import './style.css';
@@ -37,6 +40,7 @@ import {
   renderSummaryCards,
   renderSearchResults,
   renderActivityLogs,
+  renderR2Documents,
 } from './ui.js';
 
 // ── Firebase setup ────────────────────────────────────────────────────────────
@@ -4129,6 +4133,8 @@ document.querySelectorAll('.tab-overflow-dropdown .tab-btn').forEach(btn => {
       // spreadsheet viewer init
     } else if (target === 'calendar') {
       loadCalendarEvents();
+    } else if (target === 'documents') {
+      loadR2Documents();
     }
   });
 });
@@ -4381,6 +4387,186 @@ window.editTouchpointById = (logId) => {
     modal.classList.remove('hidden');
   }
 };
+
+// ── Cloudflare R2 Document Vault ──────────────────────────────────────────────
+let r2DocumentsCache = [];
+let activeR2Direction = 'all';
+let activeR2EmailFilter = '';
+let activeR2Search = '';
+
+async function loadR2Documents() {
+  const grid = document.getElementById('r2-documents-grid');
+  const refreshBtn = document.getElementById('refresh-r2-docs-btn');
+  if (grid) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1; padding: 40px 20px;">
+      <div class="empty-icon">📁</div>
+      <p style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:6px;">Connecting to Cloudflare R2 Vault...</p>
+      <p style="font-size:13px; color:var(--text-muted);">Fetching your multi-tenant encrypted files...</p>
+    </div>`;
+  }
+  if (refreshBtn) setLoading(refreshBtn, true, 'Loading…');
+
+  try {
+    idToken = await currentUser.getIdToken();
+    const data = await getR2Documents(idToken, 'all', '');
+    r2DocumentsCache = data.documents || [];
+
+    // Populate datalist of known counterparty emails
+    const datalist = document.getElementById('r2-known-emails-datalist');
+    if (datalist) {
+      datalist.innerHTML = '';
+      const uniqueEmails = [...new Set(r2DocumentsCache.map(d => d.associated_email).filter(Boolean))].sort();
+      uniqueEmails.forEach(email => {
+        const opt = document.createElement('option');
+        opt.value = email;
+        datalist.appendChild(opt);
+      });
+    }
+
+    // Update stat numbers
+    const totalCount = r2DocumentsCache.length;
+    const incomingCount = r2DocumentsCache.filter(d => d.direction === 'incoming').length;
+    const outgoingCount = r2DocumentsCache.filter(d => d.direction === 'outgoing').length;
+
+    const statTotalEl = document.getElementById('stat-r2-total');
+    const statIncEl = document.getElementById('stat-r2-incoming');
+    const statOutEl = document.getElementById('stat-r2-outgoing');
+
+    if (statTotalEl) statTotalEl.textContent = totalCount;
+    if (statIncEl) statIncEl.textContent = incomingCount;
+    if (statOutEl) statOutEl.textContent = outgoingCount;
+
+    filterAndRenderR2Documents();
+  } catch (err) {
+    console.error('[R2VaultError]', err);
+    showToast(`Failed to load R2 documents: ${err.message}`, 'error');
+    if (grid) {
+      grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1; padding: 40px 20px;">
+        <div class="empty-icon">⚠️</div>
+        <p style="font-size:15px; font-weight:600; color:#f87171; margin-bottom:6px;">Failed to load documents</p>
+        <p style="font-size:13px; color:var(--text-muted);">${err.message || 'Error connecting to R2'}</p>
+      </div>`;
+    }
+  } finally {
+    if (refreshBtn) setLoading(refreshBtn, false);
+  }
+}
+
+function filterAndRenderR2Documents() {
+  let docs = [...r2DocumentsCache];
+
+  // 1. Direction Filter
+  if (activeR2Direction && activeR2Direction !== 'all') {
+    docs = docs.filter(d => (d.direction || '').toLowerCase() === activeR2Direction.toLowerCase());
+  }
+
+  // 2. Email Address Filter
+  if (activeR2EmailFilter) {
+    const ef = activeR2EmailFilter.trim().toLowerCase();
+    docs = docs.filter(d => (d.associated_email || '').toLowerCase().includes(ef));
+  }
+
+  // 3. Search input (filename or subject)
+  if (activeR2Search) {
+    const q = activeR2Search.trim().toLowerCase();
+    docs = docs.filter(d => 
+      (d.filename || '').toLowerCase().includes(q) ||
+      (d.subject || '').toLowerCase().includes(q) ||
+      (d.associated_email || '').toLowerCase().includes(q)
+    );
+  }
+
+  renderR2Documents(docs, handleDeleteR2Document);
+}
+
+async function handleDeleteR2Document(key, cardEl) {
+  if (!confirm('Are you sure you want to permanently delete this file from Cloudflare R2?')) {
+    return;
+  }
+  try {
+    idToken = await currentUser.getIdToken();
+    await deleteR2Document(idToken, key);
+    showToast('File deleted from Cloudflare R2.', 'success');
+    r2DocumentsCache = r2DocumentsCache.filter(d => d.key !== key);
+    filterAndRenderR2Documents();
+
+    // Update counts
+    const statTotalEl = document.getElementById('stat-r2-total');
+    const statIncEl = document.getElementById('stat-r2-incoming');
+    const statOutEl = document.getElementById('stat-r2-outgoing');
+    if (statTotalEl) statTotalEl.textContent = r2DocumentsCache.length;
+    if (statIncEl) statIncEl.textContent = r2DocumentsCache.filter(d => d.direction === 'incoming').length;
+    if (statOutEl) statOutEl.textContent = r2DocumentsCache.filter(d => d.direction === 'outgoing').length;
+  } catch (err) {
+    showToast(`Failed to delete document: ${err.message}`, 'error');
+  }
+}
+
+async function handleSyncR2Inbox() {
+  if (!oauthToken) {
+    showToast('Please sign in with Google to sync inbox attachments.', 'warning');
+    return;
+  }
+  const syncBtn = document.getElementById('sync-r2-inbox-btn');
+  if (syncBtn) setLoading(syncBtn, true, 'Syncing…');
+  try {
+    idToken = await currentUser.getIdToken();
+    const res = await syncR2InboxAttachments(oauthToken, idToken, 30);
+    showToast(`Successfully archived ${res.synced || 0} inbox attachments to Cloudflare R2!`, 'success');
+    await loadR2Documents();
+  } catch (err) {
+    showToast(`Failed to sync attachments: ${err.message}`, 'error');
+  } finally {
+    if (syncBtn) setLoading(syncBtn, false);
+  }
+}
+
+// R2 Documents Event Listeners
+const refreshR2DocsBtn = document.getElementById('refresh-r2-docs-btn');
+const syncR2InboxBtn = document.getElementById('sync-r2-inbox-btn');
+const r2EmailFilterInput = document.getElementById('r2-email-filter-input');
+const r2SearchInput = document.getElementById('r2-search-input');
+const btnGotoDocuments = document.getElementById('btn-goto-documents');
+
+if (refreshR2DocsBtn) refreshR2DocsBtn.addEventListener('click', loadR2Documents);
+if (syncR2InboxBtn) syncR2InboxBtn.addEventListener('click', handleSyncR2Inbox);
+
+if (r2EmailFilterInput) {
+  r2EmailFilterInput.addEventListener('input', (e) => {
+    activeR2EmailFilter = e.target.value;
+    filterAndRenderR2Documents();
+  });
+}
+
+if (r2SearchInput) {
+  r2SearchInput.addEventListener('input', (e) => {
+    activeR2Search = e.target.value;
+    filterAndRenderR2Documents();
+  });
+}
+
+document.querySelectorAll('.r2-dir-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.r2-dir-filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeR2Direction = btn.dataset.dir || 'all';
+    filterAndRenderR2Documents();
+  });
+});
+
+if (btnGotoDocuments) {
+  btnGotoDocuments.addEventListener('click', () => {
+    const docTabBtn = document.querySelector('.tab-btn[data-tab="documents"]');
+    if (docTabBtn) {
+      docTabBtn.click();
+    } else {
+      document.querySelectorAll('.tabs .tab-btn').forEach(b => b.classList.remove('active'));
+      tabPanels.forEach(p => p.classList.remove('active'));
+      document.getElementById('tab-documents')?.classList.add('active');
+      loadR2Documents();
+    }
+  });
+}
 
 
 
