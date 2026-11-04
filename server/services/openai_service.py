@@ -1,31 +1,63 @@
 """
-OpenAI service — email summarisation only.
-Embeddings are handled locally by all-MiniLM-L6-v2 in vector_store.py.
+LLM Service — Provider-agnostic intelligence for summarization, entity extraction, and RAG Q&A.
+Supports seamless switching between OpenAI, OpenRouter, Groq, DeepSeek, Together, or any OpenAI-compatible endpoint.
+
+Configuration via Environment Variables:
+- LLM_MODEL: Model identifier (e.g. 'gpt-4o-mini', 'deepseek-chat', 'llama-3.3-70b-versatile', 'openai/gpt-4o-mini').
+- LLM_BASE_URL: Optional custom API endpoint (e.g. 'https://api.groq.com/openai/v1', 'https://api.deepseek.com/v1').
+- LLM_API_KEY: Provider API key (falls back to OPENAI_API_KEY).
 """
 
 import os
-
 from openai import AsyncOpenAI
 
 _client: AsyncOpenAI | None = None
+_client_config_hash: str | None = None
+
+
+def get_llm_client_and_model() -> tuple[AsyncOpenAI, str]:
+    """
+    Returns a configured AsyncOpenAI client and model name based on environment variables.
+    Allows changing LLM providers at any time without touching application code.
+    """
+    global _client, _client_config_hash
+
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Neither LLM_API_KEY nor OPENAI_API_KEY environment variable is set.")
+
+    custom_base_url = os.getenv("LLM_BASE_URL")
+    custom_model = os.getenv("LLM_MODEL")
+
+    # OpenRouter detection & defaults
+    is_openrouter = api_key.startswith("sk-or-v1-")
+    default_base_url = "https://openrouter.ai/api/v1" if is_openrouter else None
+    base_url = custom_base_url or default_base_url
+
+    # Model default
+    if custom_model:
+        model_name = custom_model
+    elif is_openrouter:
+        model_name = "openai/gpt-4o-mini"
+    else:
+        model_name = "gpt-4o-mini"
+
+    # Re-initialize client if config changed
+    config_hash = f"{api_key[-8:]}_{base_url}"
+    if _client is None or _client_config_hash != config_hash:
+        if base_url:
+            _client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        else:
+            _client = AsyncOpenAI(api_key=api_key)
+        _client_config_hash = config_hash
+
+    return _client, model_name
 
 
 def get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
-        
-        # Automatically detect OpenRouter keys and configure base URL
-        if api_key.startswith("sk-or-v1-"):
-            _client = AsyncOpenAI(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1"
-            )
-        else:
-            _client = AsyncOpenAI(api_key=api_key)
-    return _client
+    """Backward compatibility helper for get_client()."""
+    client, _ = get_llm_client_and_model()
+    return client
 
 
 SUMMARIZE_SYSTEM_PROMPT = (
@@ -39,37 +71,29 @@ SUMMARIZE_SYSTEM_PROMPT = (
 
 async def summarize_email(email_body: str, subject: str = "") -> str:
     """
-    Summarise email content using GPT-4o-mini.
+    Summarise email content using the configured LLM model.
     Keeps token usage minimal by capping body length and limiting output tokens.
-
-    Returns a bullet-point summary string.
     """
     if not email_body.strip():
         return "No readable content found in this email."
 
-    # Truncate to 2500 chars to limit input tokens (~625 tokens max for body)
     truncated_body = email_body[:2500]
-
     user_content = (
         f"Subject: {subject}\n\n{truncated_body}"
         if subject
         else truncated_body
     )
 
-    client = get_client()
-    
-    # Use OpenRouter model name if using OpenRouter key
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
-    
+    client, model_name = get_llm_client_and_model()
+
     response = await client.chat.completions.create(
         model=model_name,
         messages=[
             {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
             {"role": "user",   "content": user_content},
         ],
-        max_tokens=150,       # ~2-3 bullet points comfortably
-        temperature=0.3,      # Low temp for consistent, factual summaries
+        max_tokens=150,
+        temperature=0.3,
     )
     return response.choices[0].message.content.strip()
 
@@ -79,9 +103,7 @@ async def generate_subject_from_content(email_body: str, summary: str = "") -> s
     Generate a clear, professional subject line (4-8 words) based on the email body or summary
     when the original email has no subject.
     """
-    client = get_client()
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
+    client, model_name = get_llm_client_and_model()
 
     text_context = summary or email_body[:1000]
     if not text_context.strip():
@@ -107,7 +129,7 @@ async def generate_subject_from_content(email_body: str, summary: str = "") -> s
         generated = response.choices[0].message.content.strip().replace('"', '').replace("'", "")
         return generated if generated else "General Message"
     except Exception as e:
-        print(f"[OpenAI] Failed to generate subject fallback: {e}")
+        print(f"[LLMService] Failed to generate subject fallback: {e}")
         return "General Message"
 
 
@@ -129,11 +151,8 @@ async def extract_graph_entities(subject: str, summary: str, body: str = "") -> 
     Extract structured topics, organizations, and action items for the Knowledge Graph.
     """
     content_sample = f"Subject: {subject}\nSummary: {summary}\nBody: {body[:800]}"
-    client = get_client()
-    
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
-    
+    client, model_name = get_llm_client_and_model()
+
     try:
         response = await client.chat.completions.create(
             model=model_name,
@@ -145,7 +164,6 @@ async def extract_graph_entities(subject: str, summary: str, body: str = "") -> 
             temperature=0.1,
         )
         raw_json = response.choices[0].message.content.strip()
-        # Clean JSON if model returned markdown codeblock
         if raw_json.startswith("```"):
             raw_json = raw_json.replace("```json", "").replace("```", "").strip()
         import json
@@ -174,20 +192,17 @@ async def summarize_email_club(emails_list: list[dict]) -> str:
     if not emails_list:
         return "No emails selected to summarize."
 
-    # Format multi-email text payload
     prompt_parts = []
     for idx, e in enumerate(emails_list, 1):
         subj = e.get("subject", "(No Subject)")
         sender = e.get("from", "Unknown")
         date = e.get("date", "")
-        body = e.get("body", "")[:1200]  # Cap each body to keep token usage minimal
+        body = e.get("body", "")[:1200]
         prompt_parts.append(f"--- EMAIL {idx} ---\nFrom: {sender}\nDate: {date}\nSubject: {subj}\nContent:\n{body}\n")
 
     user_content = f"Synthesize these {len(emails_list)} emails into a single executive summary:\n\n" + "\n".join(prompt_parts)
 
-    client = get_client()
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
+    client, model_name = get_llm_client_and_model()
 
     response = await client.chat.completions.create(
         model=model_name,
@@ -233,19 +248,8 @@ async def draft_persona_email(
         f"Additional Context/Instructions: {additional_context}\n"
         f"Recipient Email (if any): {recipient_email}\n"
     )
-    
-    # Look up user profile from MongoDB to append signature if exists
-    profile_data = {"name": "", "designation": "", "company_name": "", "phone_number": ""}
-    try:
-        from db import profiles_collection
-        # Can query if uid or profile context available
-    except Exception:
-        pass
 
-    client = get_client()
-    
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
+    client, model_name = get_llm_client_and_model()
     
     response = await client.chat.completions.create(
         model=model_name,
@@ -278,12 +282,9 @@ ASK_GRAPH_SYSTEM_PROMPT = (
 
 async def query_graph_ai(user_query: str, graph_context_text: str) -> str:
     """
-    Answer natural language queries about the Knowledge Graph structure, entities, and anomalies using GPT-4o-mini.
+    Answer natural language queries about the Knowledge Graph structure, entities, and anomalies using the configured LLM.
     """
-    client = get_client()
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
-
+    client, model_name = get_llm_client_and_model()
     user_content = f"Question: {user_query}\n\nKnowledge Graph Context:\n{graph_context_text}"
 
     response = await client.chat.completions.create(
@@ -298,3 +299,53 @@ async def query_graph_ai(user_query: str, graph_context_text: str) -> str:
     return response.choices[0].message.content.strip()
 
 
+async def answer_semantic_query(query: str, search_results: list[dict]) -> str:
+    """
+    RAG Synthesis: Generate a direct, synthesized executive answer to the user's
+    search query based on the top semantic matches retrieved from Pinecone.
+    """
+    if not search_results:
+        return ""
+
+    context_snippets = []
+    for idx, doc in enumerate(search_results[:5], 1):
+        subj = doc.get("subject", "No Subject")
+        sender = doc.get("from", "Unknown")
+        dt = doc.get("date", "")
+        summary = doc.get("summary", "")
+        context_snippets.append(
+            f"Email #{idx}:\n"
+            f"- From: {sender}\n"
+            f"- Date: {dt}\n"
+            f"- Subject: {subj}\n"
+            f"- Summary: {summary}"
+        )
+
+    context_str = "\n\n".join(context_snippets)
+    client, model_name = get_llm_client_and_model()
+
+    system_prompt = (
+        "You are Nexus AI, an intelligent executive email assistant. "
+        "The user asked a natural language search question over their emails. "
+        "Using ONLY the provided email context snippets, give a direct, concise, and helpful answer (2 to 3 sentences max). "
+        "Explicitly mention the sender name/email and date when referencing facts. "
+        "If the specific detail or number was not found in the context, concisely state what the closest email discussed. "
+        "Do not include conversational preamble like 'Certainly!' or 'Based on the context'."
+    )
+
+    user_prompt = f"Context from emails:\n{context_str}\n\nUser Question/Query: {query}"
+
+    try:
+        response = await client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=180,
+            temperature=0.2,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[LLMService] Error generating RAG answer: {e}")
+        return ""

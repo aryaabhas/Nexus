@@ -1157,7 +1157,7 @@ async function handleSearch() {
   try {
     idToken = await currentUser.getIdToken();
     const data = await searchEmails(query, idToken, limit);
-    renderSearchResults(data.results || []);
+    renderSearchResults(data.results || [], data.answer || '');
   } catch (err) {
     showToast(err.message, 'error');
   } finally {

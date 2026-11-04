@@ -225,7 +225,7 @@ export function renderSummaryCards(summaries, onForward, onDelete) {
 }
 
 // ── Render search results ────────────────────────────────────────────────────
-export function renderSearchResults(results) {
+export function renderSearchResults(results, aiAnswer = '') {
   const topMatchContainer = document.getElementById('search-top-match-container');
   const otherMatchesTitle = document.getElementById('search-other-matches-title');
   const otherMatchesList = document.getElementById('search-other-matches-list');
@@ -244,6 +244,27 @@ export function renderSearchResults(results) {
       </div>`;
     }
     return;
+  }
+
+  // 0. Render AI Synthesized Direct Answer (RAG)
+  if (aiAnswer) {
+    const aiAnswerCard = document.createElement('div');
+    aiAnswerCard.className = 'glass-card ai-answer-box';
+    aiAnswerCard.style.border = '1px solid rgba(139, 92, 246, 0.4)';
+    aiAnswerCard.style.background = 'rgba(139, 92, 246, 0.08)';
+    aiAnswerCard.style.padding = '16px 20px';
+    aiAnswerCard.style.borderRadius = '12px';
+    aiAnswerCard.style.marginBottom = '20px';
+    aiAnswerCard.style.boxShadow = '0 4px 20px rgba(139, 92, 246, 0.12)';
+    aiAnswerCard.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 700; color: #a78bfa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;">
+        <span>✨</span> AI Direct Answer
+      </div>
+      <p style="font-size: 14px; line-height: 1.6; color: var(--text-primary); margin: 0; font-weight: 500;">
+        ${escHtml(aiAnswer)}
+      </p>
+    `;
+    topMatchContainer.appendChild(aiAnswerCard);
   }
 
   // 1. Render Top-1 Best Match
