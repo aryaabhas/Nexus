@@ -160,15 +160,18 @@ async def send_email_route(
             to=to,
             subject=subject,
             body=body,
+            from_addr=email_addr or "",
             attachments=mime_attachments,
         )
         thread_id = res.get("threadId", "")
         if thread_id:
             reply_tracker_service.track_thread(uid, thread_id, to, subject)
-        log_service.add_log(uid, email_addr, "FORWARD_EMAIL", f"Forwarded email summary to '{to}' with subject '{subject}' ({len(mime_attachments)} attachments).", "SUCCESS")
+        log_service.add_log(uid, email_addr, "SEND_EMAIL", f"Sent email to '{to}' with subject '{subject}' ({len(mime_attachments)} attachments).", "SUCCESS")
         return {"status": "sent", "message_id": res.get("id", ""), "thread_id": thread_id}
+    except HTTPException:
+        raise
     except Exception as e:
-        log_service.add_log(uid, email_addr, "FORWARD_EMAIL", f"Failed to forward email summary to '{to}': {e!s}", "ERROR")
+        log_service.add_log(uid, email_addr, "SEND_EMAIL", f"Failed to send email to '{to}': {e!s}", "ERROR")
         raise HTTPException(status_code=502, detail=f"Failed to send email via Gmail API: {e}")
 
 

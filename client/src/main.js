@@ -50,6 +50,7 @@ const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
 provider.addScope('https://www.googleapis.com/auth/gmail.send');
+provider.addScope('https://www.googleapis.com/auth/gmail.compose');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentUser = null;
@@ -675,13 +676,15 @@ if (sendEmailBtn) {
       showToast(`Email sent successfully to ${to}!`, 'success');
       closeCompose();
     } catch (err) {
-      if (err.message.includes('401') || err.message.includes('403')) {
-        showToast('Gmail send permission expired or denied. Re-authenticating…', 'warning');
+      const errMsg = err.message || '';
+      const isAuthErr = errMsg.includes('401') || errMsg.includes('403') || errMsg.includes('PERMISSION') || errMsg.includes('SCOPE') || errMsg.includes('invalid_grant');
+      if (isAuthErr) {
+        showToast('Gmail send permission expired or requires authorization. Re-authenticating…', 'warning');
         try {
           const result = await signInWithPopup(auth, provider);
           const credential = GoogleAuthProvider.credentialFromResult(result);
           oauthToken = credential.accessToken;
-          localStorage.setItem('gmail_oauth_token', oauthToken);
+          saveOauthToken(oauthToken);
           idToken = await result.user.getIdToken();
           await sendEmail(oauthToken, idToken, to, subject, body, composeFiles);
           showToast(`Email sent successfully to ${to}!`, 'success');
@@ -690,7 +693,7 @@ if (sendEmailBtn) {
           showToast(retryErr.message || 'Send failed', 'error');
         }
       } else {
-        showToast(err.message || 'Failed to send email', 'error');
+        showToast(errMsg || 'Failed to send email', 'error');
       }
     } finally {
       setLoading(sendEmailBtn, false, 'Send Email');

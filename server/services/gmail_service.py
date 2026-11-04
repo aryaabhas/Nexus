@@ -7,6 +7,7 @@ import base64
 import html
 import re
 
+from fastapi import HTTPException
 import httpx
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -214,51 +215,66 @@ async def send_email(
     to: str,
     subject: str,
     body: str,
+    from_addr: str = "",
     attachments: list[tuple[str, bytes, str]] = None,
 ) -> dict:
     """
-    Send an email via Gmail API using RFC 2822 MIME format, supporting file attachments.
+    Send an email via Gmail API using RFC 5322 MIME format with proper CRLF line
+    endings and unpadded base64url encoding, supporting file attachments.
     attachments: list of tuples (filename, content_bytes, content_type)
     """
-    from email import encoders
-    from email.mime.base import MIMEBase
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
+    from email.message import EmailMessage
+    from email.policy import SMTP
 
-    if attachments:
-        msg = MIMEMultipart()
-        msg["To"] = to
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-
-        for filename, content, content_type in attachments:
-            try:
-                mimetype = content_type or "application/octet-stream"
-                if "/" in mimetype:
-                    maintype, subtype = mimetype.split("/", 1)
-                else:
-                    maintype, subtype = "application", "octet-stream"
-                
-                part = MIMEBase(maintype, subtype)
-                part.set_payload(content)
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f"attachment; filename=\"{filename}\"",
+    # Resolve sender address if not explicitly passed
+    sender = from_addr.strip() if from_addr else ""
+    if not sender or "@" not in sender:
+        try:
+            async with httpx.AsyncClient() as client:
+                prof_resp = await client.get(
+                    f"{GMAIL_API_BASE}/profile",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10,
                 )
-                msg.attach(part)
+                if prof_resp.status_code == 200:
+                    sender = prof_resp.json().get("emailAddress", "")
+        except Exception as pe:
+            print(f"[GmailService] Could not resolve user profile email: {pe}")
+
+    msg = EmailMessage(policy=SMTP)
+    msg["To"] = to.strip()
+    msg["Subject"] = subject.strip()
+    if sender:
+        msg["From"] = sender
+    else:
+        msg["From"] = "me"
+
+    msg.set_content(body or "")
+
+    # Add attachments if any
+    if attachments:
+        for filename, content, content_type in attachments:
+            if not content:
+                continue
+            mimetype = content_type or "application/octet-stream"
+            if "/" in mimetype:
+                maintype, subtype = mimetype.split("/", 1)
+            else:
+                maintype, subtype = "application", "octet-stream"
+            try:
+                msg.add_attachment(
+                    content,
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=filename,
+                )
             except Exception as e:
                 print(f"[GmailServiceError] Failed to attach file {filename}: {e}")
-    else:
-        from email.message import EmailMessage
-        msg = EmailMessage()
-        msg["To"] = to
-        msg["Subject"] = subject
-        msg.set_content(body)
 
-    # Encode to base64url
+    # RFC 2822 bytes with standard CRLF (\r\n) line terminators
     raw_bytes = msg.as_bytes()
-    encoded_message = base64.urlsafe_b64encode(raw_bytes).decode("utf-8")
+    # Gmail API requires URL-safe base64 with stripped '=' padding
+    encoded_message = base64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("utf-8")
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -268,8 +284,20 @@ async def send_email(
                 "Content-Type": "application/json",
             },
             json={"raw": encoded_message},
-            timeout=20,
+            timeout=25,
         )
 
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        err_detail = resp.text
+        try:
+            err_json = resp.json()
+            err_detail = err_json.get("error", {}).get("message", resp.text)
+        except Exception:
+            pass
+        print(f"[GmailSendError] Gmail API responded with status {resp.status_code}: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Gmail API error ({resp.status_code}): {err_detail}",
+        )
+
     return resp.json()
