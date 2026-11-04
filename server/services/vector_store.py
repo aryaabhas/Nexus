@@ -118,13 +118,34 @@ def search(query_text: str, uid: str = "default_user", k: int = 5) -> list[dict]
     results = []
     for match in matches:
         match_id = getattr(match, "id", None) or getattr(match, "_id", None)
-        score = float(getattr(match, "score", 0.0))
-        fields = getattr(match, "fields", {}) or {}
+        score = float(getattr(match, "score", 0.0) or 0.0)
+        
+        # In Pinecone SDK Document class, fields are accessed via .get() or .to_dict()
+        doc_dict = match.to_dict() if hasattr(match, "to_dict") else {}
+        if not doc_dict and hasattr(match, "fields"):
+            doc_dict = getattr(match, "fields", {}) or {}
 
-        subject = fields.get("subject") or fields.get("title") or getattr(match, "title", "No Subject")
-        summary = fields.get("summary", "")
-        sender = fields.get("from", "")
-        date = fields.get("date", "")
+        subject = (
+            doc_dict.get("subject")
+            or doc_dict.get("title")
+            or getattr(match, "subject", "")
+            or getattr(match, "title", "No Subject")
+        )
+        summary = (
+            doc_dict.get("summary")
+            or getattr(match, "summary", "")
+            or doc_dict.get("chunk_text", "")
+        )
+        sender = (
+            doc_dict.get("from")
+            or getattr(match, "from", "")
+            or ""
+        )
+        date = (
+            doc_dict.get("date")
+            or getattr(match, "date", "")
+            or ""
+        )
 
         results.append({
             "message_id": match_id,
@@ -168,14 +189,28 @@ def get_all_summaries(uid: str | None = None) -> list[dict]:
                 fetched = idx.documents.fetch(namespace=namespace, ids=batch)
                 docs = getattr(fetched, "documents", {}) or {}
                 for mid, doc in docs.items():
+                    doc_dict = doc.to_dict() if hasattr(doc, "to_dict") else {}
                     subj = (
-                        getattr(doc, "subject", "")
-                        or getattr(doc, "title", "")
-                        or "No Subject"
+                        doc_dict.get("subject")
+                        or doc_dict.get("title")
+                        or getattr(doc, "subject", "")
+                        or getattr(doc, "title", "No Subject")
                     )
-                    summ = getattr(doc, "summary", "") or ""
-                    sender = getattr(doc, "from", "") or ""
-                    dt = getattr(doc, "date", "") or ""
+                    summ = (
+                        doc_dict.get("summary")
+                        or getattr(doc, "summary", "")
+                        or ""
+                    )
+                    sender = (
+                        doc_dict.get("from")
+                        or getattr(doc, "from", "")
+                        or ""
+                    )
+                    dt = (
+                        doc_dict.get("date")
+                        or getattr(doc, "date", "")
+                        or ""
+                    )
 
                     summaries.append({
                         "message_id": mid,

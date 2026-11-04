@@ -259,9 +259,14 @@ async def summarize_emails(
             email   = gmail_service.extract_email_content(raw)
             summary = await openai_service.summarize_email(email["body"], email["subject"])
 
+            # If subject is missing or "(No subject)", auto-generate an intelligent title from content
+            effective_subject = (email["subject"] or "").strip()
+            if not effective_subject or effective_subject.lower() in ("no subject", "(no subject)", "untitled"):
+                effective_subject = await openai_service.generate_subject_from_content(email["body"], summary)
+
             vector_store.add_document({
                 "message_id": msg_id,
-                "subject":    email["subject"],
+                "subject":    effective_subject,
                 "from":       email["from"],
                 "date":       email["date"],
                 "summary":    summary,
@@ -271,13 +276,13 @@ async def summarize_emails(
             # Extract graph entities & update Knowledge Graph
             try:
                 entities = await openai_service.extract_graph_entities(
-                    subject=email["subject"],
+                    subject=effective_subject,
                     summary=summary,
                     body=email["body"]
                 )
                 graph_service.add_email_to_graph(
                     message_id=msg_id,
-                    subject=email["subject"],
+                    subject=effective_subject,
                     sender_raw=email["from"],
                     date=email["date"],
                     summary=summary,
@@ -291,13 +296,14 @@ async def summarize_emails(
                 uid=user.get("uid", ""),
                 email=user.get("email") or "",
                 action="SUMMARIZE_SINGLE",
-                details=f"Summarized email from '{email['from']}' (Subject: '{email['subject']}').",
+                details=f"Summarized email from '{email['from']}' (Subject: '{effective_subject}').",
                 status="SUCCESS"
             )
 
             results.append({
                 "message_id": msg_id,
                 "summary":    summary,
+                "subject":    effective_subject,
                 "status":     "stored",
             })
         except Exception as e:

@@ -74,6 +74,43 @@ async def summarize_email(email_body: str, subject: str = "") -> str:
     return response.choices[0].message.content.strip()
 
 
+async def generate_subject_from_content(email_body: str, summary: str = "") -> str:
+    """
+    Generate a clear, professional subject line (4-8 words) based on the email body or summary
+    when the original email has no subject.
+    """
+    client = get_client()
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    model_name = "openai/gpt-4o-mini" if api_key.startswith("sk-or-v1-") else "gpt-4o-mini"
+
+    text_context = summary or email_body[:1000]
+    if not text_context.strip():
+        return "Untitled Communication"
+
+    try:
+        response = await client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a concise, professional email subject line (4 to 8 words maximum) "
+                        "that accurately reflects the core message or request. "
+                        "Do not include quotes, prefixes like 'Subject:', or punctuation at the end."
+                    ),
+                },
+                {"role": "user", "content": text_context},
+            ],
+            max_tokens=25,
+            temperature=0.3,
+        )
+        generated = response.choices[0].message.content.strip().replace('"', '').replace("'", "")
+        return generated if generated else "General Message"
+    except Exception as e:
+        print(f"[OpenAI] Failed to generate subject fallback: {e}")
+        return "General Message"
+
+
 ENTITY_EXTRACTION_PROMPT = (
     "Extract structured entities from this email to build a Knowledge Graph. "
     "Respond ONLY with a valid JSON object matching this structure: "
