@@ -34,13 +34,21 @@ CRITICAL RULES:
    - If the user's message does NOT mention a new deal price/value, KEEP the existing deal_value.
    - If this is a brand new client and no stage is mentioned, default deal_stage to "DISCOVERY".
 
-3. DATE COMPUTATION & VACATIONS:
-   - When a user mentions a date like "10 nov", "10th Nov", "Nov 10", "10th of November", "next Tuesday", etc., compute the EXACT ISO date (YYYY-MM-DD) using the calendar reference above ({current_year}-11-10).
-   - If the message mentions vacation, leave, trip, holiday, or out-of-office:
-     - status: "ON_VACATION"
-     - details: description (e.g. "On vacation until Nov 10")
-     - resume_date: exact ISO date string (YYYY-MM-DD). NEVER return null if a day or month was stated.
-   - If they are back or available: status: "AVAILABLE".
+3. DATE COMPUTATION — MEETINGS VS VACATIONS (CRITICAL):
+   - Always compute exact ISO dates (YYYY-MM-DD) from relative or conversational dates (e.g., "17th Nov" -> "{current_year}-11-17").
+   - MEETING / FOLLOW-UP / CALL DATES:
+     If the date is for a meeting, call, demo, presentation, or review (e.g. "next meeting on 17th Nov", "call tomorrow", "follow-up by Friday"):
+     * THIS IS AN ACTION ITEM, NEVER A VACATION!
+     * DO NOT set availability to ON_VACATION!
+     * Set availability.status = "AVAILABLE", availability.resume_date = null, availability.details = null.
+     * Put the task in next_action.task (e.g. "Meeting with client on Nov 17") and due_date in next_action.due_date ("{current_year}-11-17").
+   - VACATION / ABSENCE DATES:
+     ONLY if the user EXPLICITLY states they are on vacation, leave, holiday, trip, away, or out of office (OOO):
+     * Set availability.status = "ON_VACATION".
+     * Set availability.resume_date to the return date (YYYY-MM-DD).
+     * Set availability.details to the description (e.g. "On vacation until Nov 17").
+   - IF NO VACATION IS MENTIONED:
+     * availability.status must be "AVAILABLE", with resume_date: null, details: null.
 
 4. DEAL STAGE & VALUE:
    - Stages: "LEAD", "DISCOVERY", "PROPOSAL", "NEGOTIATION", "FINAL_CLOSURE", "CLOSED_WON", "CLOSED_LOST".
@@ -203,17 +211,39 @@ async def preview_pipeline_incident(uid: str, text: str) -> dict:
     next_action = extracted.get("next_action", {}) or {}
     summary = extracted.get("incident_summary", text[:100])
 
-    # Regex date fallback
+    # Distinguish vacation intent vs meeting/action intent
+    vacation_keywords = [
+        "vacation", "holiday", "leave", "away", "out of office", "ooo", "trip",
+        "off", "traveling", "travelling", "break", "unavailable", "pto"
+    ]
+    is_vacation_text = any(re.search(r'\b' + re.escape(w) + r'\b', text.lower()) for w in vacation_keywords)
+    meeting_keywords = [
+        "meeting", "call", "demo", "sync", "follow up", "follow-up", "discussion",
+        "pitch", "review", "due", "deadline", "next", "schedule", "scheduled"
+    ]
+    is_meeting_text = any(re.search(r'\b' + re.escape(w) + r'\b', text.lower()) for w in meeting_keywords)
+
     raw_date = availability.get("resume_date")
     parsed_date = _parse_relative_or_text_date(text, now)
-    if parsed_date:
-        availability["resume_date"] = parsed_date
+
+    if is_vacation_text:
+        target_date = parsed_date or raw_date
         availability["status"] = "ON_VACATION"
+        availability["resume_date"] = target_date
         if not availability.get("details"):
-            availability["details"] = f"On vacation until {parsed_date}"
-    elif raw_date:
-        availability["resume_date"] = raw_date
-        availability["status"] = "ON_VACATION"
+            availability["details"] = f"On vacation until {target_date}" if target_date else "On vacation"
+    else:
+        # User did NOT mention vacation! Keep/set as AVAILABLE
+        availability["status"] = "AVAILABLE"
+        availability["resume_date"] = None
+        availability["details"] = None
+        # If a date was mentioned in context of a meeting/followup, assign to next_action
+        if parsed_date:
+            if not next_action:
+                next_action = {}
+            next_action["due_date"] = parsed_date
+            if not next_action.get("task") or next_action.get("task") == "Review latest update":
+                next_action["task"] = f"Scheduled follow-up / meeting on {parsed_date}"
 
     # Search existing pipeline account
     existing_doc = pipeline_collection.find_one({
@@ -493,10 +523,53 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
     return await confirm_and_commit_incident(uid=uid, data=preview)
 
 
+def sanitize_erroneous_vacations(uid: str):
+    """
+    Cleans up legacy pipeline clients and incidents where 'ON_VACATION' was mistakenly
+    inferred from general meeting/follow-up dates without any vacation keywords.
+    """
+    vacation_regex = r"(vacation|holiday|leave|away|out of office|ooo|trip|traveling|break|off|pto)"
+    try:
+        clients_to_check = list(pipeline_collection.find({
+            "uid": uid,
+            "availability.status": "ON_VACATION"
+        }))
+        for c in clients_to_check:
+            text = f"{c.get('last_incident_text') or ''} {c.get('last_incident_summary') or ''}"
+            if not re.search(vacation_regex, text, re.IGNORECASE):
+                pipeline_collection.update_one(
+                    {"_id": c["_id"]},
+                    {"$set": {
+                        "availability.status": "AVAILABLE",
+                        "availability.resume_date": None,
+                        "availability.details": None
+                    }}
+                )
+
+        incidents_to_check = list(incidents_collection.find({
+            "uid": uid,
+            "extracted_state.availability.status": "ON_VACATION"
+        }))
+        for inc in incidents_to_check:
+            raw_text = f"{inc.get('raw_text') or ''} {inc.get('summary') or ''}"
+            if not re.search(vacation_regex, raw_text, re.IGNORECASE):
+                incidents_collection.update_one(
+                    {"_id": inc["_id"]},
+                    {"$set": {
+                        "extracted_state.availability.status": "AVAILABLE",
+                        "extracted_state.availability.resume_date": None,
+                        "extracted_state.availability.details": None
+                    }}
+                )
+    except Exception as e:
+        print(f"[PipelineService] sanitize_erroneous_vacations note: {e}")
+
+
 def get_pipeline_board(uid: str) -> dict:
     """
     Retrieves all tracked clients for user grouped by stage with aggregated metrics.
     """
+    sanitize_erroneous_vacations(uid)
     clients = list(pipeline_collection.find({"uid": uid}).sort("last_updated_at", -1))
 
     valid_stages = ["DISCOVERY", "PROPOSAL", "NEGOTIATION", "FINAL_CLOSURE", "CLOSED_WON", "CLOSED_LOST"]
@@ -716,17 +789,37 @@ async def query_pipeline_and_generate_report(uid: str, query: str) -> dict:
         "You are the Chief Commercial Officer & Senior Sales Intelligence Analyst for Nexus.\n"
         "You are provided with VERIFIED pipeline data computed deterministically from the database, "
         "as well as chronological discussion/incident logs and vector memory.\n\n"
-        "STRICT COMPLIANCE RULES:\n"
+        "STRICT COMPLIANCE & FORMATTING RULES (MANDATORY):\n"
         "1. EXACT NUMBERS: Use the exact deal counts and monetary values provided in the verified data. Never invent numbers.\n"
-        "2. SPECIFIC CLIENT/COMPANY INQUIRIES (e.g. 'history of updates on Figma'):\n"
-        "   - You MUST list the complete chronological timeline of discussions with exact dates/timestamps.\n"
-        "   - Highlight what was discussed, what commitments were made, vacation alerts, and current deal stage.\n"
-        "3. 'TOTAL COMPANIES IN PIPELINE WITH CLIENT DETAILS':\n"
-        "   - State the total count of companies.\n"
-        "   - For EACH company, explicitly list: Company Name, Associated Client Contact(s) (name & email), Deal Stage, Deal Value ($), Active Availability/Vacation status, and Next Action.\n"
-        "4. 'FINAL STAGE CLOSURE' INQUIRIES:\n"
-        "   - State the exact count and list every client in FINAL_CLOSURE with their vacation dates and signature status.\n"
-        "5. TONE & FORMAT: Professional, board-ready, concise Markdown with bullet points and bold highlights."
+        "2. REPORT FORMATTING (DO NOT CREATE RUN-ON TEXT WITH HYPHENS):\n"
+        "   - Structure executive reports with clean GitHub-style Markdown tables and bulleted cards.\n"
+        "   - NEVER concatenate company details into a single run-on sentence with hyphens (e.g. NEVER write '1. Company: X - Contact: Y - Stage: Z - ...').\n"
+        "   - Always put each client under its own clean heading (e.g. '### 🏢 [Company Name]') with individual bullet lines for Primary Contact, Deal Stage & Value, Active Availability, and Next Action.\n"
+        "3. EXECUTIVE SALES STAGES REPORTS (when asked for sales stages report or pipeline briefing):\n"
+        "   Always format with:\n"
+        "   a) # 📊 Executive Sales Stages Report\n"
+        "   b) **Executive KPI Summary:**\n"
+        "      | Metric | Value | Executive Notes |\n"
+        "      | :--- | :--- | :--- |\n"
+        "      | Total Companies in Pipeline | X | Tracked accounts in CRM |\n"
+        "      | Total Pipeline Value | $XX,XXX | Aggregated open deal volume |\n"
+        "      | Deals in Final Closure | X | Accounts pending signing |\n"
+        "      | Active Vacation / Blocker Alerts | X | Requiring attention |\n\n"
+        "   c) **Sales Stage Breakdown:**\n"
+        "      | Deal Stage | Open Deals | Total Value ($) | Companies |\n"
+        "      | :--- | :--- | :--- | :--- |\n\n"
+        "   d) **Detailed Company Intelligence Breakdown:**\n"
+        "      For EACH company, format cleanly as:\n"
+        "      ### 🏢 [Company Name]\n"
+        "      * **Primary Contact:** [Client Name] ([Email] | 📞 [Phone])\n"
+        "      * **Deal Stage & Value:** [Stage] · $[Value]\n"
+        "      * **Active Availability:** [🟢 Active / Available OR 🏖️ Away till Date]\n"
+        "      * **Next Action:** [Next Step] (Due: [Date])\n"
+        "      * **Latest Incident Intelligence:** [Summary of latest discussion/incident]\n\n"
+        "   e) **Key Commercial Next Steps:** Actionable recommendations for sales leadership.\n"
+        "4. SPECIFIC CLIENT INQUIRIES (e.g. 'history of updates on Figma'):\n"
+        "   - Chronological timeline with exact dates, discussion points, commitments, and current status.\n"
+        "5. TONE: Professional, board-ready, concise, and structured."
     )
 
     user_prompt = (

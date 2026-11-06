@@ -4863,17 +4863,69 @@ function formatHumanDate(dateStr) {
 
 function renderMarkdownHtml(markdownReport) {
   if (!markdownReport) return '';
-  return markdownReport
-    .replace(/^### (.*$)/gim, '<h3 style="font-size:15px; font-weight:700; color:var(--text-primary); margin:16px 0 8px 0; border-bottom:1px solid var(--border-subtle); padding-bottom:4px;">$1</h3>')
-    .replace(/^#### (.*$)/gim, '<h4 style="font-size:13.5px; font-weight:700; color:#38bdf8; margin:12px 0 6px 0;">$1</h4>')
-    .replace(/^## (.*$)/gim, '<h2 style="font-size:17px; font-weight:800; color:var(--text-primary); margin:18px 0 10px 0;">$1</h2>')
-    .replace(/^# (.*$)/gim, '<h1 style="font-size:19px; font-weight:800; color:var(--text-primary); margin:0 0 12px 0; border-bottom: 2px solid var(--border-subtle); padding-bottom: 6px;">$1</h1>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+
+  let text = markdownReport;
+
+  // 1. Parse Markdown Tables (| Col 1 | Col 2 |)
+  text = text.replace(/((?:^|\n)\|[^\n]+\|\r?\n\|[\s\-:|]+\|\r?\n(?:\|[^\n]+\|\r?\n?)+)/g, (tableBlock) => {
+    const lines = tableBlock.trim().split('\n').filter(l => l.trim().startsWith('|'));
+    if (lines.length < 2) return tableBlock;
+
+    const parseRow = (line) => line.split('|').slice(1, -1).map(c => c.trim());
+    const headerCols = parseRow(lines[0]);
+    const bodyRows = lines.slice(2).map(parseRow);
+
+    const thead = `<thead><tr style="background: rgba(56, 189, 248, 0.12); border-bottom: 2px solid rgba(56, 189, 248, 0.35);">${headerCols.map(c => `<th style="padding: 10px 14px; text-align: left; font-size: 11.5px; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${c}</th>`).join('')}</tr></thead>`;
+    
+    const tbody = `<tbody>${bodyRows.map((row, idx) => `
+      <tr style="background: ${idx % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'}; border-bottom: 1px solid var(--border-subtle);">
+        ${row.map(c => `<td style="padding: 9px 14px; font-size: 12.5px; color: var(--text-primary); vertical-align: middle;">${c}</td>`).join('')}
+      </tr>
+    `).join('')}</tbody>`;
+
+    return `<div style="overflow-x: auto; margin: 16px 0; border: 1px solid var(--border-subtle); border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.25);"><table style="width: 100%; border-collapse: collapse;">${thead}${tbody}</table></div>`;
+  });
+
+  // 2. Headers
+  text = text
+    .replace(/^#### (.*$)/gim, '<h4 style="font-size:13.5px; font-weight:700; color:#38bdf8; margin:16px 0 6px 0;">$1</h4>')
+    .replace(/^### (.*$)/gim, '<h3 style="font-size:15px; font-weight:700; color:var(--text-primary); margin:18px 0 8px 0; border-bottom:1px solid var(--border-subtle); padding-bottom:5px;">$1</h3>')
+    .replace(/^## (.*$)/gim, '<h2 style="font-size:17px; font-weight:800; color:var(--text-primary); margin:22px 0 10px 0; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:6px;">$1</h2>')
+    .replace(/^# (.*$)/gim, '<h1 style="font-size:20px; font-weight:800; color:var(--text-primary); margin:0 0 14px 0; border-bottom: 2px solid var(--border-subtle); padding-bottom: 8px;">$1</h1>');
+
+  // 3. Bold, Italic & Inline Code
+  text = text
+    .replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--text-primary); font-weight:700;">$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-family:var(--font-mono); font-size:12px;">$1</code>')
-    .replace(/^\* (.*$)/gim, '<li style="margin-bottom:6px; color:var(--text-primary);">$1</li>')
-    .replace(/<\/li>\n<li/g, '</li><li')
-    .replace(/\n\n/g, '<p style="margin: 8px 0;"></p>');
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px; font-family:var(--font-mono); font-size:12px; color:#38bdf8;">$1</code>');
+
+  // 4. Numbered Lists (1. Item)
+  text = text.replace(/(?:^|\n)(\d+\.\s+[^\n]+(?:\n(?!\d+\.|\*|-|#)[^\n]+)*)+/g, (match) => {
+    const items = match.trim().split(/\n(?=\d+\.\s+)/);
+    const liHtml = items.map(it => {
+      const content = it.replace(/^\d+\.\s+/, '').trim();
+      return `<li style="margin-bottom: 8px; line-height: 1.5; color: var(--text-primary);">${content}</li>`;
+    }).join('');
+    return `<ol style="padding-left: 24px; margin: 12px 0;">${liHtml}</ol>`;
+  });
+
+  // 5. Bullet Lists (* Item or - Item)
+  text = text.replace(/(?:^|\n)([\*\-]\s+[^\n]+(?:\n(?![\*\-]|\d+\.|#)[^\n]+)*)+/g, (match) => {
+    const items = match.trim().split(/\n(?=[\*\-]\s+)/);
+    const liHtml = items.map(it => {
+      const content = it.replace(/^[\*\-]\s+/, '').trim();
+      return `<li style="margin-bottom: 6px; line-height: 1.5; color: var(--text-primary);">${content}</li>`;
+    }).join('');
+    return `<ul style="padding-left: 20px; margin: 10px 0;">${liHtml}</ul>`;
+  });
+
+  // 6. Horizontal Rules
+  text = text.replace(/^---$/gim, '<hr style="border: 0; height: 1px; background: var(--border-subtle); margin: 16px 0;" />');
+
+  // 7. Paragraphs
+  text = text.replace(/\n\n+/g, '<p style="margin: 10px 0;"></p>');
+
+  return text;
 }
 
 async function loadPipelineBoard() {
@@ -4966,7 +5018,9 @@ async function loadPipelineBoard() {
                 <div style="display: flex; flex-direction: column; gap: 3px;">
                   ${contacts.map(c => `
                     <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 10.5px;">
-                      <span style="font-weight: 600; color: var(--text-primary);">${escHtml(c.name)} ${c.role ? `<span style="color: #38bdf8; font-weight: normal;">(${escHtml(c.role)})</span>` : ''}</span>
+                      <a href="javascript:void(0)" class="client-contact-link" data-name="${escHtml(c.name)}" data-company="${escHtml(item.company_name)}" data-email="${escHtml(c.email || '')}" data-phone="${escHtml(c.phone || '')}" data-role="${escHtml(c.role || 'Associated Contact')}" style="color: #38bdf8; text-decoration: underline; font-weight: 600; cursor: pointer;">
+                        ${escHtml(c.name)} ${c.role ? `<span style="color: rgba(56,189,248,0.7); font-weight: normal;">(${escHtml(c.role)})</span>` : ''}
+                      </a>
                       <span style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${c.email ? escHtml(c.email) : ''}${c.phone ? ' · 📞 ' + escHtml(c.phone) : ''}</span>
                     </div>
                   `).join('')}
@@ -4980,7 +5034,9 @@ async function loadPipelineBoard() {
               <div style="flex: 1; min-width: 0;">
                 <h4 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--text-primary);">${escHtml(item.company_name)}</h4>
                 <div style="font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 3px;">
-                  <span style="font-weight: 600; color: var(--text-primary);">👤 ${escHtml(item.client_name)}</span>
+                  <a href="javascript:void(0)" class="client-contact-link" data-name="${escHtml(item.client_name)}" data-company="${escHtml(item.company_name)}" data-email="${escHtml(item.client_email || '')}" data-phone="${escHtml(item.client_phone || '')}" data-role="Primary Contact" style="color: #38bdf8; text-decoration: underline; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">
+                    <span>👤</span> <span>${escHtml(item.client_name)}</span>
+                  </a>
                   ${item.client_email ? `<span style="color: var(--text-secondary);">&lt;${escHtml(item.client_email)}&gt;</span>` : ''}
                   ${item.client_phone ? `<span style="color: var(--text-secondary);">📞 ${escHtml(item.client_phone)}</span>` : ''}
                 </div>
@@ -5416,8 +5472,12 @@ function renderTimelineView(clientInfo, incidents) {
     <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px;">
       <div>
         <div style="font-size: 16px; font-weight: 700; color: var(--text-primary);">${escHtml(clientInfo.company_name)}</div>
-        <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 8px;">
-          <span>Primary Contact: <strong style="color: var(--text-primary);">${escHtml(clientInfo.client_name)}</strong></span>
+        <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+          <span>Primary Contact: 
+            <a href="javascript:void(0)" class="client-contact-link" data-name="${escHtml(clientInfo.client_name)}" data-company="${escHtml(clientInfo.company_name)}" data-email="${escHtml(clientInfo.client_email || '')}" data-phone="${escHtml(clientInfo.client_phone || '')}" data-role="Primary Contact" style="color: #38bdf8; text-decoration: underline; font-weight: 700; cursor: pointer;">
+              ${escHtml(clientInfo.client_name)}
+            </a>
+          </span>
           ${clientInfo.client_email ? `<span style="color: var(--text-secondary);">&lt;${escHtml(clientInfo.client_email)}&gt;</span>` : ''}
           ${clientInfo.client_phone ? `<span style="color: var(--text-secondary);">📞 ${escHtml(clientInfo.client_phone)}</span>` : ''}
         </div>
@@ -5427,7 +5487,11 @@ function renderTimelineView(clientInfo, incidents) {
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px;">
               ${contacts.map(c => `
                 <div style="background: var(--bg-surface); padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border-subtle); font-size: 11px;">
-                  <div style="font-weight: 600; color: var(--text-primary);">${escHtml(c.name)} ${c.role ? `<span style="color:#38bdf8; font-weight:normal;">(${escHtml(c.role)})</span>` : ''}</div>
+                  <div style="font-weight: 600;">
+                    <a href="javascript:void(0)" class="client-contact-link" data-name="${escHtml(c.name)}" data-company="${escHtml(clientInfo.company_name)}" data-email="${escHtml(c.email || '')}" data-phone="${escHtml(c.phone || '')}" data-role="${escHtml(c.role || 'Associated Contact')}" style="color: #38bdf8; text-decoration: underline; cursor: pointer;">
+                      ${escHtml(c.name)} ${c.role ? `<span style="color: rgba(56,189,248,0.7); font-weight: normal;">(${escHtml(c.role)})</span>` : ''}
+                    </a>
+                  </div>
                   <div style="color: var(--text-secondary); font-size: 10.5px; margin-top: 2px;">
                     ${c.email ? `📧 ${escHtml(c.email)}` : ''} ${c.phone ? ` · 📞 ${escHtml(c.phone)}` : ''}
                   </div>
@@ -5583,3 +5647,238 @@ if (pipelineRefreshBtn) {
     loadPipelineBoard();
   });
 }
+
+// ── Individual Contact Profile Dossier Modal Logic ─────────────────────────────
+const contactCardModal = document.getElementById('contact-card-modal');
+const closeContactModalBtn = document.getElementById('close-contact-modal-btn');
+const contactModalComposeBtn = document.getElementById('contact-modal-compose-btn');
+const contactModalViewDirBtn = document.getElementById('contact-modal-view-dir-btn');
+
+let activeContactDossier = null;
+
+function openContactCardModal(contact) {
+  if (!contactCardModal) return;
+  activeContactDossier = contact;
+
+  const name = contact.name || 'Client Contact';
+  const company = contact.company || 'Company';
+  const email = contact.email || '';
+  const phone = contact.phone || '';
+  const role = contact.role || 'Client Contact';
+
+  // Avatar initials
+  const avatarEl = document.getElementById('contact-modal-avatar');
+  if (avatarEl) {
+    const initials = name.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'CC';
+    avatarEl.textContent = initials;
+  }
+
+  const nameEl = document.getElementById('contact-modal-name');
+  if (nameEl) nameEl.textContent = name;
+
+  const roleEl = document.getElementById('contact-modal-role');
+  if (roleEl) roleEl.textContent = role;
+
+  const compEl = document.getElementById('contact-modal-company');
+  if (compEl) compEl.textContent = company;
+
+  // Find linked pipeline intelligence if available
+  let pipeMatch = null;
+  if (pipelineBoardCache && pipelineBoardCache.columns) {
+    for (const stage of Object.keys(pipelineBoardCache.columns)) {
+      for (const item of pipelineBoardCache.columns[stage]) {
+        if ((item.company_name && item.company_name.toLowerCase().trim() === company.toLowerCase().trim()) ||
+            (item.client_name && item.client_name.toLowerCase().trim() === name.toLowerCase().trim()) ||
+            (email && item.client_email && item.client_email.toLowerCase().trim() === email.toLowerCase().trim())) {
+          pipeMatch = item;
+          break;
+        }
+      }
+      if (pipeMatch) break;
+    }
+  }
+
+  // Find linked directory profile if available
+  const cleanEmail = email.toLowerCase().trim();
+  const cleanName = name.toLowerCase().trim();
+  const dirMatch = crmProfilesCache.find(p => 
+    (cleanEmail && p.email && p.email.toLowerCase().trim() === cleanEmail) ||
+    (cleanName && p.name && p.name.toLowerCase().trim() === cleanName)
+  );
+
+  const stage = (pipeMatch && pipeMatch.deal_stage) || (dirMatch && dirMatch.pipeline_stage) || 'DISCOVERY';
+  const val = (pipeMatch && pipeMatch.deal_value) ? '$' + Number(pipeMatch.deal_value).toLocaleString() : (dirMatch && dirMatch.pipeline_deal_value ? '$' + Number(dirMatch.pipeline_deal_value).toLocaleString() : 'Not Set');
+  const avail = (pipeMatch && pipeMatch.availability) || (dirMatch && dirMatch.pipeline_availability) || {};
+  const isVacation = avail.status === 'ON_VACATION';
+  const resume = avail.resume_date ? formatHumanDate(avail.resume_date) : '';
+  const nextTask = (pipeMatch && pipeMatch.next_action && pipeMatch.next_action.task) ? pipeMatch.next_action.task : '';
+  const nextDue = (pipeMatch && pipeMatch.next_action && pipeMatch.next_action.due_date) ? formatHumanDate(pipeMatch.next_action.due_date) : '';
+  const summary = (pipeMatch && pipeMatch.last_incident_summary) || (dirMatch && dirMatch.pipeline_last_incident) || '';
+
+  // Associated tasks in localTasks
+  const associatedTasks = localTasks.filter(t => 
+    (email && t.client_email && t.client_email.toLowerCase().trim() === cleanEmail) ||
+    (t.description && t.description.toLowerCase().includes(cleanName))
+  );
+
+  const bodyEl = document.getElementById('contact-modal-body');
+  if (bodyEl) {
+    bodyEl.innerHTML = `
+      <!-- Contact Channels Grid -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <div style="background: var(--bg-elevated); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 3px;">📧 Email Address</div>
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            ${email ? `<a href="mailto:${escHtml(email)}" style="color: #38bdf8; text-decoration: none;">${escHtml(email)}</a>` : '<span style="color: var(--text-muted); font-weight: normal; font-style: italic;">No email recorded</span>'}
+          </div>
+        </div>
+        <div style="background: var(--bg-elevated); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 3px;">📞 Phone Number</div>
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            ${phone ? `<a href="tel:${escHtml(phone)}" style="color: #38bdf8; text-decoration: none;">${escHtml(phone)}</a>` : '<span style="color: var(--text-muted); font-weight: normal; font-style: italic;">No phone recorded</span>'}
+          </div>
+        </div>
+      </div>
+
+      <!-- Commercial Pipeline Status Card -->
+      <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 12px 14px;">
+        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #38bdf8; margin-bottom: 8px;">💼 Active Commercial Intelligence</div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">Deal Stage</div>
+            <div style="font-size: 12.5px; font-weight: 700; color: #38bdf8; margin-top: 2px;">${escHtml(stage)}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">Deal Value</div>
+            <div style="font-size: 12.5px; font-weight: 700; color: #10b981; margin-top: 2px;">${val}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">Availability</div>
+            <div style="font-size: 12px; font-weight: 700; color: ${isVacation ? '#f59e0b' : '#34d399'}; margin-top: 2px;">
+              ${isVacation ? `🏖️ Away ${resume ? '(till ' + escHtml(resume) + ')' : ''}` : '🟢 Available'}
+            </div>
+          </div>
+        </div>
+
+        ${nextTask ? `
+          <div style="margin-top: 10px; font-size: 12px; color: var(--text-primary); background: rgba(0,0,0,0.18); padding: 7px 10px; border-radius: 6px; border-left: 3px solid #38bdf8;">
+            <strong>Scheduled Meeting / Next Action:</strong> ${escHtml(nextTask)} ${nextDue ? `<span style="color: #38bdf8;">(Due: ${escHtml(nextDue)})</span>` : ''}
+          </div>
+        ` : ''}
+
+        ${summary ? `
+          <div style="margin-top: 8px; font-size: 11.5px; color: var(--text-secondary); line-height: 1.4;">
+            <strong>Latest Discussion Note:</strong> &ldquo;${escHtml(summary)}&rdquo;
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Associated Tasks & Tickets -->
+      <div>
+        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;">
+          📋 Active Tasks &amp; Tickets (${associatedTasks.length}):
+        </div>
+        ${associatedTasks.length === 0 ? `
+          <div style="font-size: 12px; color: var(--text-muted); font-style: italic;">No active task tickets for this individual.</div>
+        ` : `
+          <div style="display: flex; flex-direction: column; gap: 5px;">
+            ${associatedTasks.map(t => `
+              <div style="background: var(--bg-elevated); padding: 8px 10px; border-radius: 5px; border: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 11.5px;">
+                <span style="font-weight: 600; color: var(--text-primary);">${escHtml(t.title)}</span>
+                <span style="color: var(--text-muted); font-size: 10.5px;">${t.status === 'todo' ? 'To Do' : t.status === 'inprogress' ? 'In Progress' : 'Done'}</span>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  contactCardModal.classList.remove('hidden');
+}
+
+function closeContactCardModal() {
+  if (contactCardModal) contactCardModal.classList.add('hidden');
+  activeContactDossier = null;
+}
+
+if (closeContactModalBtn) {
+  closeContactModalBtn.addEventListener('click', closeContactCardModal);
+}
+if (contactCardModal) {
+  contactCardModal.addEventListener('click', (e) => {
+    if (e.target === contactCardModal) closeContactCardModal();
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && contactCardModal && !contactCardModal.classList.contains('hidden')) {
+    closeContactCardModal();
+  }
+});
+
+if (contactModalComposeBtn) {
+  contactModalComposeBtn.addEventListener('click', () => {
+    if (activeContactDossier && activeContactDossier.email) {
+      const email = activeContactDossier.email;
+      closeContactCardModal();
+      openCompose(email, '', '');
+    } else {
+      showToast('No email address on file for this contact.', 'info');
+      closeContactCardModal();
+      openCompose('', '', '');
+    }
+  });
+}
+
+if (contactModalViewDirBtn) {
+  contactModalViewDirBtn.addEventListener('click', () => {
+    if (!activeContactDossier) return;
+    const { name, company, email } = activeContactDossier;
+    closeContactCardModal();
+    if (clientHistoryModal) closeClientHistoryModal();
+    
+    // Switch to Client Directory tab
+    const dirTabBtn = document.querySelector('[data-tab="profiles"]');
+    if (dirTabBtn) dirTabBtn.click();
+
+    setTimeout(() => {
+      const cleanEmail = (email || '').toLowerCase().trim();
+      const cleanName = (name || '').toLowerCase().trim();
+      const cleanComp = (company || '').toLowerCase().trim();
+
+      const profile = crmProfilesCache.find(p => 
+        (cleanEmail && p.email && p.email.toLowerCase().trim() === cleanEmail) ||
+        (cleanName && p.name && p.name.toLowerCase().trim() === cleanName) ||
+        (cleanComp && p.company && p.company.toLowerCase().trim() === cleanComp)
+      );
+
+      if (profile) {
+        renderProfileDetail(profile);
+        document.querySelectorAll('.profile-card').forEach(card => {
+          const t = card.querySelector('.profile-card-title')?.textContent?.trim().toLowerCase();
+          if (t === profile.name.toLowerCase()) {
+            card.classList.add('active');
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else {
+            card.classList.remove('active');
+          }
+        });
+      }
+    }, 150);
+  });
+}
+
+// Global delegated click listener for any .client-contact-link
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('.client-contact-link');
+  if (link) {
+    e.preventDefault();
+    e.stopPropagation();
+    const name = link.dataset.name || '';
+    const company = link.dataset.company || '';
+    const email = link.dataset.email || '';
+    const phone = link.dataset.phone || '';
+    const role = link.dataset.role || 'Client Contact';
+    openContactCardModal({ name, company, email, phone, role });
+  }
+});
