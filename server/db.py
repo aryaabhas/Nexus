@@ -22,4 +22,5 @@ calendar_collection = db["calendar_events"]
 r2_docs_collection = db["r2_documents"]
 pipeline_collection = db["client_pipeline"]
 incidents_collection = db["client_incidents"]
+client_directory_collection = db["client_directory"]
 

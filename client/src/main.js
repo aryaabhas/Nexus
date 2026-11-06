@@ -31,6 +31,9 @@ import {
   deletePipelineClient,
   getClientHistory,
   generateClientDossier,
+  previewPipelineIncident,
+  confirmPipelineIncident,
+  getPipelineDirectory,
 } from './api.js';
 import './style.css';
 import {
@@ -3543,15 +3546,48 @@ async function loadProfiles() {
       const dropzone = document.getElementById('crm-import-dropzone');
       if (dropzone) dropzone.style.display = 'none';
       renderProfilesList();
-      return;
     } catch (e) {
       console.error('Failed to parse saved profiles:', e);
     }
   }
 
-  profilesList.innerHTML = '<div class="empty-state">No client profiles loaded. Drag & drop or import a spreadsheet above to start!</div>';
-  const dropzone = document.getElementById('crm-import-dropzone');
-  if (dropzone) dropzone.style.display = 'block';
+  // Sync with MongoDB client_directory collection if user authenticated
+  if (currentUser) {
+    try {
+      const dirData = await getPipelineDirectory(idToken);
+      if (dirData && dirData.profiles && dirData.profiles.length > 0) {
+        dirData.profiles.forEach(p => {
+          const pEmail = (p.email || '').toLowerCase().trim();
+          const pName = (p.name || '').toLowerCase().trim();
+          const pComp = (p.company || '').toLowerCase().trim();
+          const existing = crmProfilesCache.find(e => 
+            (pEmail && e.email && e.email.toLowerCase().trim() === pEmail) ||
+            (pName && e.name && e.name.toLowerCase().trim() === pName && pComp && e.company && e.company.toLowerCase().trim() === pComp)
+          );
+          if (existing) {
+            Object.assign(existing, p);
+          } else {
+            crmProfilesCache.push(p);
+          }
+        });
+        localStorage.setItem('crm_imported_profiles', JSON.stringify(crmProfilesCache));
+        const clearBtn = document.getElementById('crm-clear-import-btn');
+        if (clearBtn) clearBtn.style.display = 'block';
+        const dropzone = document.getElementById('crm-import-dropzone');
+        if (dropzone && crmProfilesCache.length > 0) dropzone.style.display = 'none';
+        renderProfilesList();
+        return;
+      }
+    } catch (dirErr) {
+      console.warn('Pipeline directory sync note:', dirErr);
+    }
+  }
+
+  if (crmProfilesCache.length === 0) {
+    profilesList.innerHTML = '<div class="empty-state">No client profiles loaded. Drag & drop or import a spreadsheet above to start!</div>';
+    const dropzone = document.getElementById('crm-import-dropzone');
+    if (dropzone) dropzone.style.display = 'block';
+  }
 }
 
 let crmListenersWired = false;
@@ -3801,6 +3837,53 @@ window.deleteCrmHistorySheet = (event, id) => {
   showToast('Spreadsheet records deleted from client directory.', 'success');
 };
 
+function findPipelineMatchForProfile(profile) {
+  if (!profile) return null;
+  const pCompany = (profile.company || '').toLowerCase().trim();
+  const pEmail = (profile.email || '').toLowerCase().trim();
+  const pName = (profile.name || '').toLowerCase().trim();
+
+  // 1. Direct fields on profile if synced from directory
+  if (profile.pipeline_stage) {
+    return {
+      deal_stage: profile.pipeline_stage,
+      deal_value: profile.pipeline_deal_value,
+      availability: profile.pipeline_availability,
+      last_incident_summary: profile.pipeline_last_incident,
+      company_name: profile.company,
+      client_name: profile.name,
+      associated_contacts: profile.associated_contacts || [],
+    };
+  }
+
+  // 2. Cross-reference with pipelineBoardCache
+  if (pipelineBoardCache && pipelineBoardCache.columns) {
+    for (const stage of Object.keys(pipelineBoardCache.columns)) {
+      for (const item of pipelineBoardCache.columns[stage]) {
+        const cCompany = (item.company_name || '').toLowerCase().trim();
+        const cEmail = (item.client_email || '').toLowerCase().trim();
+        const cName = (item.client_name || '').toLowerCase().trim();
+        
+        if (pCompany && cCompany && (pCompany === cCompany || pCompany.includes(cCompany) || cCompany.includes(pCompany))) {
+          return item;
+        }
+        if (pEmail && cEmail && pEmail === cEmail) {
+          return item;
+        }
+        if (item.associated_contacts && Array.isArray(item.associated_contacts)) {
+          for (const ac of item.associated_contacts) {
+            if ((ac.email && pEmail && ac.email.toLowerCase().trim() === pEmail) ||
+                (ac.name && pName && ac.name.toLowerCase().trim() === pName)) {
+              return item;
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function renderProfilesList() {
   if (!profilesList) return;
   profilesList.innerHTML = '';
@@ -3847,6 +3930,26 @@ function renderProfilesList() {
     const taskCount = localTasks.filter(t => (t.client_email && t.client_email.toLowerCase().trim() === clientEmailClean)).length;
     const taskBadgeHtml = taskCount > 0 ? `<span style="font-size:10px; background:rgba(99,102,241,0.15); color:#818cf8; padding:1px 6px; border-radius:10px; font-weight:600;">${taskCount} tasks</span>` : '';
 
+    // Compute pipeline intelligence badge
+    const pipeMatch = findPipelineMatchForProfile(profile);
+    let pipeBadgeHtml = '';
+    if (pipeMatch) {
+      const pStage = pipeMatch.deal_stage || 'DISCOVERY';
+      const pVal = pipeMatch.deal_value ? '$' + Number(pipeMatch.deal_value).toLocaleString() : '';
+      const pAvail = pipeMatch.availability || {};
+      const isAway = pAvail.status === 'ON_VACATION';
+      const resume = pAvail.resume_date ? formatHumanDate(pAvail.resume_date) : '';
+
+      pipeBadgeHtml = `
+        <div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-top:5px;">
+          <span style="font-size:10px; background:rgba(56, 189, 248, 0.15); color:#38bdf8; border:1px solid rgba(56, 189, 248, 0.35); padding:1px 6px; border-radius:4px; font-weight:700;">
+            🎯 ${escHtml(pStage)}${pVal ? ' · ' + pVal : ''}
+          </span>
+          ${isAway ? `<span style="font-size:10px; background:rgba(245, 158, 11, 0.15); color:#f59e0b; border:1px solid rgba(245, 158, 11, 0.35); padding:1px 6px; border-radius:4px; font-weight:700;">🏖️ Away ${resume ? '(till ' + escHtml(resume) + ')' : ''}</span>` : ''}
+        </div>
+      `;
+    }
+
     card.innerHTML = `
       <div class="profile-card-title">${escHtml(profile.name)}</div>
       <div class="profile-card-subtitle">${escHtml(profile.email)}</div>
@@ -3857,6 +3960,7 @@ function renderProfilesList() {
           ${tagHtml}
         </div>
       </div>
+      ${pipeBadgeHtml}
     `;
     
     card.addEventListener('click', () => {
@@ -3879,6 +3983,9 @@ function renderProfileDetail(profile) {
     (task.client_email && task.client_email.toLowerCase().trim() === clientEmailClean) ||
     (task.description && task.description.toLowerCase().includes(clientEmailClean))
   );
+
+  // Find linked Sales Pipeline Intelligence
+  const pipeMatch = findPipelineMatchForProfile(profile);
   
   let tasksHtml = '';
   if (associatedTasks.length === 0) {
@@ -3935,6 +4042,51 @@ function renderProfileDetail(profile) {
         : `<span class="tag-pill" style="background:rgba(16,185,129,0.1); color:#10b981; border:1px solid rgba(16,185,129,0.2); padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">${escHtml(profile.status)}</span>`
       }
     </div>
+
+    <!-- Sales Pipeline Intelligence Section -->
+    ${pipeMatch ? `
+      <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 14px 16px; margin-top: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 16px;">💼</span>
+            <h3 style="font-size: 12.5px; font-weight: 700; text-transform: uppercase; color: #38bdf8; margin: 0; letter-spacing: 0.5px;">Sales Pipeline Intelligence</h3>
+          </div>
+          <button id="view-in-pipeline-btn" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 2px 10px; height: 26px; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; cursor: pointer;">
+            Open in Client Pipeline →
+          </button>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px;">
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10.5px; color: var(--text-muted); text-transform: uppercase;">Deal Stage</div>
+            <div style="font-weight: 700; font-size: 13px; color: #38bdf8; margin-top: 2px;">${escHtml(pipeMatch.deal_stage || 'DISCOVERY')}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10.5px; color: var(--text-muted); text-transform: uppercase;">Deal Value</div>
+            <div style="font-weight: 700; font-size: 13px; color: #10b981; margin-top: 2px;">${pipeMatch.deal_value ? '$' + Number(pipeMatch.deal_value).toLocaleString() : 'Not Set'}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 10.5px; color: var(--text-muted); text-transform: uppercase;">Availability Status</div>
+            <div style="font-weight: 700; font-size: 12px; color: ${pipeMatch.availability?.status === 'ON_VACATION' ? '#f59e0b' : '#34d399'}; margin-top: 2px;">
+              ${pipeMatch.availability?.status === 'ON_VACATION' ? `🏖️ Away (till ${escHtml(formatHumanDate(pipeMatch.availability?.resume_date) || 'TBD')})` : '🟢 Available'}
+            </div>
+          </div>
+        </div>
+
+        ${pipeMatch.last_incident_summary ? `
+          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; background: rgba(0,0,0,0.18); padding: 8px 10px; border-radius: 6px; border-left: 3px solid #38bdf8;">
+            <strong style="color: var(--text-primary);">Latest Incident Summary:</strong> ${escHtml(pipeMatch.last_incident_summary)}
+          </div>
+        ` : ''}
+
+        ${pipeMatch.associated_contacts && pipeMatch.associated_contacts.length > 0 ? `
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
+            <strong style="color: var(--text-primary);">Associated Team:</strong>
+            ${pipeMatch.associated_contacts.map(c => `<span style="display:inline-block; margin-left: 6px; background: rgba(255,255,255,0.05); padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border-subtle);">${escHtml(c.name)}${c.role ? ` (${escHtml(c.role)})` : ''}${c.phone ? ` 📞 ${escHtml(c.phone)}` : ''}</span>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+    ` : ''}
     
     <div>
       <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--border-subtle); padding-bottom:6px; margin: 0 0 8px 0;">
@@ -3961,6 +4113,15 @@ function renderProfileDetail(profile) {
   if (crmComposeBtn) {
     crmComposeBtn.addEventListener('click', () => {
       openCompose(profile.email, '', '');
+    });
+  }
+
+  // Wire View In Pipeline Button
+  const viewInPipelineBtn = document.getElementById('view-in-pipeline-btn');
+  if (viewInPipelineBtn) {
+    viewInPipelineBtn.addEventListener('click', () => {
+      const pipeTab = document.querySelector('[data-tab="pipeline"]');
+      if (pipeTab) pipeTab.click();
     });
   }
 
@@ -4796,22 +4957,34 @@ async function loadPipelineBoard() {
 
           const nextTask = item.next_action && item.next_action.task ? item.next_action.task : '';
           const contacts = item.associated_contacts || [];
-          const contactsSummary = contacts.map(c => `${c.name}${c.role ? ` (${c.role})` : ''}`).slice(0, 2).join(', ');
+          
+          let associatedContactsHtml = '';
+          if (contacts.length > 0) {
+            associatedContactsHtml = `
+              <div style="font-size: 11px; color: var(--text-muted); margin-top: 5px; background: rgba(0,0,0,0.14); padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border-subtle);">
+                <div style="font-weight: 700; color: var(--text-secondary); font-size: 10px; text-transform: uppercase; margin-bottom: 3px;">👥 Associated Contacts (${contacts.length}):</div>
+                <div style="display: flex; flex-direction: column; gap: 3px;">
+                  ${contacts.map(c => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 10.5px;">
+                      <span style="font-weight: 600; color: var(--text-primary);">${escHtml(c.name)} ${c.role ? `<span style="color: #38bdf8; font-weight: normal;">(${escHtml(c.role)})</span>` : ''}</span>
+                      <span style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${c.email ? escHtml(c.email) : ''}${c.phone ? ' · 📞 ' + escHtml(c.phone) : ''}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
 
           card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
-              <div>
-                <h4 style="margin: 0; font-size: 13.5px; font-weight: 700; color: var(--text-primary);">${escHtml(item.company_name)}</h4>
-                <div style="font-size: 11.5px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                  <span>👤</span>
-                  <span>${escHtml(item.client_name)}</span>
+              <div style="flex: 1; min-width: 0;">
+                <h4 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--text-primary);">${escHtml(item.company_name)}</h4>
+                <div style="font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 3px;">
+                  <span style="font-weight: 600; color: var(--text-primary);">👤 ${escHtml(item.client_name)}</span>
                   ${item.client_email ? `<span style="color: var(--text-secondary);">&lt;${escHtml(item.client_email)}&gt;</span>` : ''}
+                  ${item.client_phone ? `<span style="color: var(--text-secondary);">📞 ${escHtml(item.client_phone)}</span>` : ''}
                 </div>
-                ${contacts.length > 1 ? `
-                  <div style="font-size: 10.5px; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    <span>👥 Team: ${escHtml(contactsSummary)}</span>
-                  </div>
-                ` : ''}
+                ${associatedContactsHtml}
               </div>
               <button class="btn-delete-pipeline-client" data-id="${item.id}" title="Remove from pipeline" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1;">&times;</button>
             </div>
@@ -4874,10 +5047,17 @@ async function loadPipelineBoard() {
   }
 }
 
-// Pipeline Incident Logger
+// Pipeline Incident Logger & Pre-Commit Verification Modal
 const pipelineIncidentInput = document.getElementById('pipeline-incident-input');
 const pipelineLogIncidentBtn = document.getElementById('pipeline-log-incident-btn');
 const pipelineIncidentStatusPill = document.getElementById('pipeline-incident-status-pill');
+
+const pipelineConfirmModal = document.getElementById('pipeline-confirm-modal');
+const closePipelineConfirmBtn = document.getElementById('close-pipeline-confirm-btn');
+const cancelPipelineConfirmBtn = document.getElementById('cancel-pipeline-confirm-btn');
+const commitPipelineConfirmBtn = document.getElementById('commit-pipeline-confirm-btn');
+
+let activeIncidentPreview = null;
 
 async function handleLogIncident() {
   const text = pipelineIncidentInput?.value.trim();
@@ -4886,35 +5066,220 @@ async function handleLogIncident() {
     return;
   }
 
-  setLoading(pipelineLogIncidentBtn, true, 'Processing…');
+  setLoading(pipelineLogIncidentBtn, true, 'Analyzing…');
   try {
     idToken = await currentUser.getIdToken();
-    const res = await logPipelineIncident(idToken, text);
-    const data = res.data || {};
-    
-    showToast(`✓ Updated pipeline for ${data.company_name || 'Client'}!`, 'success');
-    if (pipelineIncidentInput) pipelineIncidentInput.value = '';
+    const res = await previewPipelineIncident(idToken, text);
+    const preview = res.preview || {};
+    activeIncidentPreview = preview;
 
-    if (pipelineIncidentStatusPill) {
-      pipelineIncidentStatusPill.style.display = 'block';
-      const resume = data.availability && data.availability.resume_date ? formatHumanDate(data.availability.resume_date) : '';
-      pipelineIncidentStatusPill.innerHTML = `
-        <span style="color: #38bdf8; font-weight: 600;">Updated:</span> ${escHtml(data.company_name)} 
-        · Stage: <strong>${escHtml(data.deal_stage)}</strong>
-        ${data.availability && data.availability.status === 'ON_VACATION' ? ` · 🏖️ On Vacation ${resume ? '(till ' + escHtml(resume) + ')' : ''}` : ''}
-      `;
-      setTimeout(() => {
-        if (pipelineIncidentStatusPill) pipelineIncidentStatusPill.style.display = 'none';
-      }, 7000);
+    // Populate Modal Fields
+    const rawEl = document.getElementById('confirm-raw-text');
+    if (rawEl) rawEl.textContent = preview.raw_text || text;
+
+    const companyEl = document.getElementById('confirm-company-name');
+    if (companyEl) companyEl.value = preview.company_name || '';
+
+    const clientEl = document.getElementById('confirm-client-name');
+    if (clientEl) clientEl.value = preview.client_name || '';
+
+    const emailEl = document.getElementById('confirm-client-email');
+    if (emailEl) emailEl.value = preview.client_email || '';
+
+    const phoneEl = document.getElementById('confirm-client-phone');
+    if (phoneEl) phoneEl.value = preview.client_phone || '';
+
+    const stageEl = document.getElementById('confirm-deal-stage');
+    if (stageEl) stageEl.value = preview.deal_stage || 'DISCOVERY';
+
+    const valEl = document.getElementById('confirm-deal-value');
+    if (valEl) valEl.value = preview.deal_value || '';
+
+    const availEl = document.getElementById('confirm-avail-status');
+    if (availEl) availEl.value = preview.availability?.status || 'AVAILABLE';
+
+    const resumeEl = document.getElementById('confirm-resume-date');
+    if (resumeEl) resumeEl.value = preview.availability?.resume_date || '';
+
+    const summaryEl = document.getElementById('confirm-summary');
+    if (summaryEl) summaryEl.value = preview.summary || '';
+
+    // Render Association Match Alert Banner
+    const alertEl = document.getElementById('confirm-match-alert');
+    if (alertEl) {
+      if (preview.is_existing_account) {
+        alertEl.style.background = 'rgba(56, 189, 248, 0.12)';
+        alertEl.style.border = '1px solid rgba(56, 189, 248, 0.35)';
+        alertEl.style.color = '#38bdf8';
+        alertEl.innerHTML = `
+          <span style="font-size: 16px;">🔗</span>
+          <div>
+            <strong>Matched Existing Account:</strong> Updating pipeline intelligence for <strong>${escHtml(preview.company_name)}</strong>.
+          </div>
+        `;
+      } else {
+        alertEl.style.background = 'rgba(16, 185, 129, 0.12)';
+        alertEl.style.border = '1px solid rgba(16, 185, 129, 0.35)';
+        alertEl.style.color = '#10b981';
+        alertEl.innerHTML = `
+          <span style="font-size: 16px;">✨</span>
+          <div>
+            <strong>New Account:</strong> Will create a new pipeline account card for <strong>${escHtml(preview.company_name)}</strong>.
+          </div>
+        `;
+      }
     }
 
-    // Refresh board in real-time
-    await loadPipelineBoard();
+    // Render Associated Contacts Box
+    const contactsBox = document.getElementById('confirm-associated-contacts-box');
+    const contactsList = document.getElementById('confirm-associated-contacts-list');
+    if (contactsBox && contactsList) {
+      const contacts = preview.associated_contacts || [];
+      if (contacts.length > 0) {
+        contactsBox.style.display = 'block';
+        contactsList.innerHTML = contacts.map(c => `
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.15); padding: 5px 8px; border-radius: 4px; font-size: 11px;">
+            <span><strong>${escHtml(c.name)}</strong> ${c.role ? `<span style="color:#38bdf8;">(${escHtml(c.role)})</span>` : ''}</span>
+            <span style="color: var(--text-muted); font-size: 10.5px;">${c.email ? escHtml(c.email) : ''}${c.phone ? ' · 📞 ' + escHtml(c.phone) : ''}</span>
+          </div>
+        `).join('');
+      } else {
+        contactsBox.style.display = 'block';
+        contactsList.innerHTML = '<span style="color: var(--text-muted); font-style: italic; font-size: 11.5px;">No other associated contacts on file for this account.</span>';
+      }
+    }
+
+    // Show Confirmation Modal
+    if (pipelineConfirmModal) {
+      pipelineConfirmModal.classList.remove('hidden');
+    }
   } catch (err) {
-    showToast(err.message || 'Failed to log incident.', 'error');
+    showToast(err.message || 'Failed to analyze incident.', 'error');
   } finally {
     setLoading(pipelineLogIncidentBtn, false, 'Log Update');
   }
+}
+
+function closePipelineConfirmModal() {
+  if (pipelineConfirmModal) {
+    pipelineConfirmModal.classList.add('hidden');
+  }
+  activeIncidentPreview = null;
+}
+
+if (closePipelineConfirmBtn) {
+  closePipelineConfirmBtn.addEventListener('click', closePipelineConfirmModal);
+}
+if (cancelPipelineConfirmBtn) {
+  cancelPipelineConfirmBtn.addEventListener('click', closePipelineConfirmModal);
+}
+if (pipelineConfirmModal) {
+  pipelineConfirmModal.addEventListener('click', (e) => {
+    if (e.target === pipelineConfirmModal) closePipelineConfirmModal();
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && pipelineConfirmModal && !pipelineConfirmModal.classList.contains('hidden')) {
+    closePipelineConfirmModal();
+  }
+});
+
+if (commitPipelineConfirmBtn) {
+  commitPipelineConfirmBtn.addEventListener('click', async () => {
+    const company = document.getElementById('confirm-company-name')?.value.trim();
+    const client = document.getElementById('confirm-client-name')?.value.trim();
+    if (!company || !client) {
+      showToast('Please provide both Company Name and Client Name.', 'warning');
+      return;
+    }
+
+    setLoading(commitPipelineConfirmBtn, true, 'Saving…');
+    try {
+      idToken = await currentUser.getIdToken();
+      const payload = {
+        raw_text: activeIncidentPreview?.raw_text || pipelineIncidentInput?.value.trim() || '',
+        company_name: company,
+        client_name: client,
+        client_email: document.getElementById('confirm-client-email')?.value.trim() || null,
+        client_phone: document.getElementById('confirm-client-phone')?.value.trim() || null,
+        deal_stage: document.getElementById('confirm-deal-stage')?.value || 'DISCOVERY',
+        deal_value: parseFloat(document.getElementById('confirm-deal-value')?.value) || 0,
+        availability: {
+          status: document.getElementById('confirm-avail-status')?.value || 'AVAILABLE',
+          resume_date: document.getElementById('confirm-resume-date')?.value || null,
+        },
+        summary: document.getElementById('confirm-summary')?.value.trim() || '',
+        sync_to_directory: document.getElementById('confirm-sync-directory')?.checked ?? true,
+        matched_client_id: activeIncidentPreview?.matched_client_id || null,
+        is_existing_account: activeIncidentPreview?.is_existing_account || false,
+      };
+
+      const res = await confirmPipelineIncident(idToken, payload);
+      const data = res.data || {};
+
+      // If sync_to_directory was true, update local crmProfilesCache
+      if (payload.sync_to_directory) {
+        const contactEmail = payload.client_email ? payload.client_email.toLowerCase().trim() : '';
+        const contactName = payload.client_name.toLowerCase().trim();
+        
+        let existingProfile = crmProfilesCache.find(p => 
+          (contactEmail && p.email && p.email.toLowerCase().trim() === contactEmail) ||
+          (p.name && p.name.toLowerCase().trim() === contactName && p.company && p.company.toLowerCase().trim() === payload.company_name.toLowerCase().trim())
+        );
+
+        if (existingProfile) {
+          existingProfile.company = payload.company_name;
+          if (payload.client_phone) existingProfile.phone = payload.client_phone;
+          existingProfile.pipeline_stage = payload.deal_stage;
+          existingProfile.pipeline_deal_value = payload.deal_value;
+          existingProfile.pipeline_availability = payload.availability;
+          existingProfile.pipeline_last_incident = payload.summary;
+        } else {
+          crmProfilesCache.push({
+            id: 'client_dir_' + Date.now(),
+            name: payload.client_name,
+            email: payload.client_email || '',
+            phone: payload.client_phone || '',
+            company: payload.company_name,
+            role: 'Client',
+            status: 'Active',
+            pipeline_stage: payload.deal_stage,
+            pipeline_deal_value: payload.deal_value,
+            pipeline_availability: payload.availability,
+            pipeline_last_incident: payload.summary,
+            created_at: new Date().toISOString()
+          });
+        }
+        localStorage.setItem('crm_imported_profiles', JSON.stringify(crmProfilesCache));
+        renderProfilesList();
+      }
+
+      closePipelineConfirmModal();
+      if (pipelineIncidentInput) pipelineIncidentInput.value = '';
+
+      showToast(`✓ Confirmed & stored for ${data.company_name || payload.company_name}!`, 'success');
+
+      if (pipelineIncidentStatusPill) {
+        pipelineIncidentStatusPill.style.display = 'block';
+        const resume = data.availability && data.availability.resume_date ? formatHumanDate(data.availability.resume_date) : '';
+        pipelineIncidentStatusPill.innerHTML = `
+          <span style="color: #38bdf8; font-weight: 600;">Saved:</span> ${escHtml(data.company_name || payload.company_name)} 
+          · Stage: <strong>${escHtml(data.deal_stage || payload.deal_stage)}</strong>
+          ${data.availability && data.availability.status === 'ON_VACATION' ? ` · 🏖️ On Vacation ${resume ? '(till ' + escHtml(resume) + ')' : ''}` : ''}
+        `;
+        setTimeout(() => {
+          if (pipelineIncidentStatusPill) pipelineIncidentStatusPill.style.display = 'none';
+        }, 7000);
+      }
+
+      await loadPipelineBoard();
+      renderProfilesList();
+    } catch (err) {
+      showToast(err.message || 'Failed to save confirmed update.', 'error');
+    } finally {
+      setLoading(commitPipelineConfirmBtn, false, '✓ Confirm & Save to Pipeline & Directory');
+    }
+  });
 }
 
 if (pipelineLogIncidentBtn) {
@@ -5051,13 +5416,24 @@ function renderTimelineView(clientInfo, incidents) {
     <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px;">
       <div>
         <div style="font-size: 16px; font-weight: 700; color: var(--text-primary);">${escHtml(clientInfo.company_name)}</div>
-        <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px;">
-          Primary Contact: <strong style="color: var(--text-primary);">${escHtml(clientInfo.client_name)}</strong> 
-          ${clientInfo.client_email ? `&lt;${escHtml(clientInfo.client_email)}&gt;` : ''}
+        <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 8px;">
+          <span>Primary Contact: <strong style="color: var(--text-primary);">${escHtml(clientInfo.client_name)}</strong></span>
+          ${clientInfo.client_email ? `<span style="color: var(--text-secondary);">&lt;${escHtml(clientInfo.client_email)}&gt;</span>` : ''}
+          ${clientInfo.client_phone ? `<span style="color: var(--text-secondary);">📞 ${escHtml(clientInfo.client_phone)}</span>` : ''}
         </div>
         ${contacts.length > 0 ? `
-          <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-            👥 Associated: ${escHtml(contacts.map(c => `${c.name} (${c.role || 'Contact'})`).join(', '))}
+          <div style="margin-top: 8px; background: rgba(0,0,0,0.18); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 5px;">👥 Complete Associated Team (${contacts.length}):</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px;">
+              ${contacts.map(c => `
+                <div style="background: var(--bg-surface); padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border-subtle); font-size: 11px;">
+                  <div style="font-weight: 600; color: var(--text-primary);">${escHtml(c.name)} ${c.role ? `<span style="color:#38bdf8; font-weight:normal;">(${escHtml(c.role)})</span>` : ''}</div>
+                  <div style="color: var(--text-secondary); font-size: 10.5px; margin-top: 2px;">
+                    ${c.email ? `📧 ${escHtml(c.email)}` : ''} ${c.phone ? ` · 📞 ${escHtml(c.phone)}` : ''}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
           </div>
         ` : ''}
       </div>

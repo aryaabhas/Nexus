@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import json
 import re
 from bson import ObjectId
-from db import pipeline_collection, incidents_collection, profiles_collection
+from db import pipeline_collection, incidents_collection, profiles_collection, client_directory_collection
 from services.openai_service import get_llm_client_and_model
 from services import vector_store
 
@@ -134,11 +134,11 @@ def _parse_relative_or_text_date(text: str, base_date: datetime) -> str | None:
     return None
 
 
-async def extract_and_merge_incident(uid: str, text: str) -> dict:
+async def preview_pipeline_incident(uid: str, text: str) -> dict:
     """
-    Parses a raw natural language client update, applies stateful delta updates,
-    cross-references the client directory, upserts into MongoDB 'client_pipeline',
-    logs into 'client_incidents', and indexes into Pinecone vector store.
+    Parses a raw natural language update, checks for existing accounts in the pipeline,
+    cross-references the Client Directory, and returns a verified preview card
+    for human-in-the-loop confirmation before committing to the database.
     """
     if not text or not text.strip():
         raise ValueError("Incident text cannot be empty.")
@@ -203,7 +203,7 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
     next_action = extracted.get("next_action", {}) or {}
     summary = extracted.get("incident_summary", text[:100])
 
-    # ── Date Bug Resolution: Regex fallback for vacation dates ─────────────────
+    # Regex date fallback
     raw_date = availability.get("resume_date")
     parsed_date = _parse_relative_or_text_date(text, now)
     if parsed_date:
@@ -215,73 +215,165 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
         availability["resume_date"] = raw_date
         availability["status"] = "ON_VACATION"
 
-    now_iso = now.isoformat()
-
-    # ── Client Directory Cross-Referencing ─────────────────────────────────────
-    # Search profiles_collection in MongoDB for associated contacts matching company_name
-    associated_contacts = []
-    try:
-        matched_profiles = list(profiles_collection.find(
-            {"uid": uid, "$or": [
-                {"company_name": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}},
-                {"company": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}}
-            ]}
-        ).limit(10))
-        for p in matched_profiles:
-            associated_contacts.append({
-                "name": p.get("name") or client_name,
-                "email": p.get("email") or "",
-                "role": p.get("designation") or p.get("role") or "Associated Contact",
-                "phone": p.get("phone_number") or ""
-            })
-            if not client_email and p.get("email"):
-                client_email = p.get("email")
-    except Exception as pe:
-        print(f"[PipelineService] Profiles cross-reference note: {pe}")
-
-    if not associated_contacts and client_name:
-        associated_contacts.append({
-            "name": client_name,
-            "email": client_email or "",
-            "role": "Primary Contact"
-        })
-
-    # 3. Match existing client record in MongoDB
-    match_query = {
+    # Search existing pipeline account
+    existing_doc = pipeline_collection.find_one({
         "uid": uid,
         "$or": [
             {"company_name": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}},
             {"client_name": {"$regex": f"^{re.escape(client_name)}$", "$options": "i"}}
         ]
+    })
+
+    matched_existing = existing_doc is not None
+    existing_account = None
+    if existing_doc:
+        existing_account = {
+            "id": str(existing_doc["_id"]),
+            "company_name": existing_doc.get("company_name"),
+            "client_name": existing_doc.get("client_name"),
+            "deal_stage": existing_doc.get("deal_stage"),
+            "deal_value": existing_doc.get("deal_value"),
+            "availability": existing_doc.get("availability", {}),
+            "associated_contacts": existing_doc.get("associated_contacts", [])
+        }
+        # Delta preservation for preview
+        if not deal_stage or deal_stage == "DISCOVERY":
+            deal_stage = existing_doc.get("deal_stage", "DISCOVERY")
+        if deal_value is None:
+            deal_value = existing_doc.get("deal_value")
+        if not client_email:
+            client_email = existing_doc.get("client_email")
+
+    # Search Client Directory for associated contacts
+    associated_contacts = []
+    try:
+        dir_matches = list(client_directory_collection.find(
+            {"uid": uid, "$or": [
+                {"company_name": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}},
+                {"company": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}}
+            ]}
+        ).limit(10))
+        for p in dir_matches:
+            associated_contacts.append({
+                "name": p.get("name") or client_name,
+                "email": p.get("email") or "",
+                "role": p.get("role") or p.get("designation") or "Client Contact",
+                "phone": p.get("phone") or p.get("phone_number") or ""
+            })
+            if not client_email and p.get("email"):
+                client_email = p.get("email")
+    except Exception as de:
+        print(f"[PipelineService] Directory query note: {de}")
+
+    # Fallback to profiles_collection
+    if not associated_contacts:
+        try:
+            matched_profiles = list(profiles_collection.find(
+                {"uid": uid, "$or": [
+                    {"company_name": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}},
+                    {"company": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}}
+                ]}
+            ).limit(10))
+            for p in matched_profiles:
+                associated_contacts.append({
+                    "name": p.get("name") or client_name,
+                    "email": p.get("email") or "",
+                    "role": p.get("designation") or p.get("role") or "Associated Contact",
+                    "phone": p.get("phone_number") or ""
+                })
+        except Exception:
+            pass
+
+    # Ensure current client contact is listed
+    if not any(c.get("name") == client_name for c in associated_contacts) and client_name:
+        associated_contacts.append({
+            "name": client_name,
+            "email": client_email or "",
+            "role": "Primary Contact",
+            "phone": ""
+        })
+
+    return {
+        "company_name": company_name,
+        "client_name": client_name,
+        "client_email": client_email or "",
+        "deal_stage": deal_stage,
+        "deal_value": deal_value,
+        "availability": availability,
+        "blockers": blockers,
+        "next_action": next_action,
+        "summary": summary,
+        "raw_text": text,
+        "matched_existing": matched_existing,
+        "existing_account": existing_account,
+        "associated_contacts": associated_contacts
     }
-    existing_doc = pipeline_collection.find_one(match_query)
+
+
+async def confirm_and_commit_incident(uid: str, data: dict) -> dict:
+    """
+    Commits a verified client update into MongoDB pipeline, writes audit incident,
+    synchronizes/highlights the contact in the Client Directory, and embeds into Pinecone.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
+    company_name = data.get("company_name", "").strip() or "General Client"
+    client_name = data.get("client_name", "").strip() or company_name
+    client_email = data.get("client_email") or ""
+    client_phone = data.get("client_phone") or ""
+    deal_stage = (data.get("deal_stage") or "DISCOVERY").upper()
+    deal_value = data.get("deal_value")
+    if deal_value is not None:
+        try:
+            deal_value = float(deal_value)
+        except Exception:
+            pass
+
+    availability = data.get("availability") or {"status": "AVAILABLE"}
+    blockers = data.get("blockers") or []
+    next_action = data.get("next_action") or {}
+    summary = data.get("incident_summary") or data.get("summary") or "Client update processed."
+    raw_text = data.get("raw_text") or summary
+    sync_to_directory = data.get("sync_to_directory", True)
+    incoming_contacts = data.get("associated_contacts") or []
+
+    # 1. Match existing pipeline account
+    existing_doc = pipeline_collection.find_one({
+        "uid": uid,
+        "$or": [
+            {"company_name": {"$regex": f"^{re.escape(company_name)}$", "$options": "i"}},
+            {"client_name": {"$regex": f"^{re.escape(client_name)}$", "$options": "i"}}
+        ]
+    })
+
+    # Prepare merged contacts
+    existing_contacts = existing_doc.get("associated_contacts", []) if existing_doc else []
+    contacts_map = {c.get("email") or c.get("name"): c for c in existing_contacts}
+    for ic in incoming_contacts:
+        key = ic.get("email") or ic.get("name")
+        if key:
+            contacts_map[key] = ic
+    final_contacts = list(contacts_map.values()) if contacts_map else incoming_contacts
 
     if existing_doc:
         final_stage = deal_stage or existing_doc.get("deal_stage", "DISCOVERY")
-        final_value = deal_value if deal_value is not None else existing_doc.get("deal_value")
-        final_blockers = blockers if blockers else existing_doc.get("blockers", [])
-        final_email = client_email or existing_doc.get("client_email")
-        
-        # Merge contacts
-        existing_contacts = existing_doc.get("associated_contacts", [])
-        merged_contacts = {c.get("email") or c.get("name"): c for c in existing_contacts}
-        for ac in associated_contacts:
-            key = ac.get("email") or ac.get("name")
-            if key:
-                merged_contacts[key] = ac
-        final_contacts = list(merged_contacts.values()) if merged_contacts else associated_contacts
+        final_val = deal_value if deal_value is not None else existing_doc.get("deal_value")
+        final_em = client_email or existing_doc.get("client_email")
 
         pipeline_collection.update_one(
             {"_id": existing_doc["_id"]},
             {"$set": {
+                "company_name": company_name,
+                "client_name": client_name,
                 "deal_stage": final_stage,
-                "deal_value": final_value,
-                "client_email": final_email,
+                "deal_value": final_val,
+                "client_email": final_em,
                 "associated_contacts": final_contacts,
                 "availability": availability,
-                "blockers": final_blockers,
-                "next_action": next_action,
-                "last_incident_text": text,
+                "blockers": blockers if blockers else existing_doc.get("blockers", []),
+                "next_action": next_action if next_action else existing_doc.get("next_action", {}),
+                "last_incident_text": raw_text,
                 "last_incident_summary": summary,
                 "last_updated_at": now_iso
             }}
@@ -293,13 +385,13 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
             "company_name": company_name,
             "client_name": client_name,
             "client_email": client_email,
-            "associated_contacts": associated_contacts,
+            "associated_contacts": final_contacts,
             "deal_stage": deal_stage,
             "deal_value": deal_value or 0,
             "availability": availability,
             "blockers": blockers,
             "next_action": next_action,
-            "last_incident_text": text,
+            "last_incident_text": raw_text,
             "last_incident_summary": summary,
             "created_at": now_iso,
             "last_updated_at": now_iso
@@ -307,25 +399,64 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
         res = pipeline_collection.insert_one(new_doc)
         client_id_str = str(res.inserted_id)
 
-    # 4. Insert chronological audit incident
+    # 2. Insert audit incident
     incident_record = {
         "uid": uid,
         "client_id": client_id_str,
         "company_name": company_name,
         "client_name": client_name,
         "client_email": client_email,
-        "raw_text": text,
+        "raw_text": raw_text,
         "summary": summary,
-        "extracted_state": extracted,
+        "extracted_state": data,
         "timestamp": now_iso
     }
     incidents_collection.insert_one(incident_record)
 
-    # 5. Index into Pinecone Vector Store for semantic recall
+    # 3. Two-Way Client Directory Synchronization
+    synced_directory_profile = None
+    if sync_to_directory:
+        try:
+            profile_payload = {
+                "uid": uid,
+                "name": client_name,
+                "email": client_email.lower().strip() if client_email else "",
+                "phone": client_phone,
+                "company": company_name,
+                "company_name": company_name,
+                "role": "Client Contact",
+                "pipeline_stage": deal_stage,
+                "pipeline_value": deal_value,
+                "availability": availability,
+                "status": deal_stage or "Lead",
+                "last_interaction": raw_text,
+                "updated_at": now_iso
+            }
+            # Search query for upserting
+            query_cond = {"uid": uid}
+            if client_email:
+                query_cond["$or"] = [
+                    {"email": client_email.lower().strip()},
+                    {"name": client_name, "company": company_name}
+                ]
+            else:
+                query_cond["name"] = client_name
+                query_cond["company"] = company_name
+
+            client_directory_collection.update_one(
+                query_cond,
+                {"$set": profile_payload, "$setOnInsert": {"created_at": now_iso}},
+                upsert=True
+            )
+            synced_directory_profile = profile_payload
+        except Exception as pe:
+            print(f"[PipelineService] Directory sync error: {pe}")
+
+    # 4. Pinecone Vector Embedding
     try:
         vector_store.add_document({
             "id": f"incident_{client_id_str}_{int(now.timestamp())}",
-            "text": f"Client: {company_name} ({client_name}). Discussion update: {text}. Deal Stage: {deal_stage}. Availability: {availability.get('status', 'AVAILABLE')} ({availability.get('details', '')}). Next step: {next_action.get('task', '')}.",
+            "text": f"Client: {company_name} ({client_name}). Discussion update: {raw_text}. Deal Stage: {deal_stage}. Availability: {availability.get('status', 'AVAILABLE')} ({availability.get('details', '')}). Next step: {next_action.get('task', '')}.",
             "subject": f"Pipeline Discussion: {company_name}",
             "summary": summary,
             "uid": uid,
@@ -343,14 +474,23 @@ async def extract_and_merge_incident(uid: str, text: str) -> dict:
         "company_name": company_name,
         "client_name": client_name,
         "client_email": client_email,
-        "associated_contacts": associated_contacts,
+        "associated_contacts": final_contacts,
         "deal_stage": deal_stage,
         "deal_value": deal_value,
         "availability": availability,
         "blockers": blockers,
         "next_action": next_action,
-        "summary": summary
+        "summary": summary,
+        "synced_directory_profile": synced_directory_profile
     }
+
+
+async def extract_and_merge_incident(uid: str, text: str) -> dict:
+    """
+    Backward-compatible wrapper: extracts preview and automatically commits.
+    """
+    preview = await preview_pipeline_incident(uid=uid, text=text)
+    return await confirm_and_commit_incident(uid=uid, data=preview)
 
 
 def get_pipeline_board(uid: str) -> dict:
@@ -612,6 +752,16 @@ async def query_pipeline_and_generate_report(uid: str, query: str) -> dict:
         "matched_client": matched_target.get("company_name") if matched_target else None,
         "markdown_report": markdown_report
     }
+
+
+def get_client_directory_profiles(uid: str) -> list:
+    """Returns all client profiles stored in MongoDB client_directory_collection."""
+    try:
+        profiles = list(client_directory_collection.find({"uid": uid}, {"_id": 0}).sort("updated_at", -1))
+        return profiles
+    except Exception as e:
+        print(f"[PipelineService] Directory query error: {e}")
+        return []
 
 
 def delete_pipeline_client(uid: str, client_id: str) -> bool:

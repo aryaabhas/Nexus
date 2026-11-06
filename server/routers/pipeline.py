@@ -17,8 +17,71 @@ class IncidentRequest(BaseModel):
     text: str
 
 
+class ConfirmIncidentRequest(BaseModel):
+    company_name: str
+    client_name: str
+    client_email: str | None = None
+    client_phone: str | None = None
+    deal_stage: str
+    deal_value: float | int | None = None
+    availability: dict = {}
+    blockers: list = []
+    next_action: dict = {}
+    incident_summary: str | None = ""
+    raw_text: str | None = ""
+    sync_to_directory: bool = True
+    associated_contacts: list = []
+
+
 class QueryRequest(BaseModel):
     query: str
+
+
+@router.post("/preview")
+async def preview_incident_route(body: IncidentRequest, user: dict = Depends(get_current_user)):
+    """
+    Analyzes raw natural language, cross-references existing pipeline accounts and Client Directory,
+    and returns a structured preview card for user verification before database writes.
+    """
+    uid = user.get("uid", "")
+    if not body.text or not body.text.strip():
+        raise HTTPException(status_code=400, detail="Incident update text cannot be empty.")
+
+    try:
+        preview = await pipeline_service.preview_pipeline_incident(uid=uid, text=body.text.strip())
+        return {"status": "success", "preview": preview}
+    except Exception as e:
+        print(f"[PipelineRouter] Error generating incident preview: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate incident preview: {e}")
+
+
+@router.post("/confirm")
+async def confirm_incident_route(body: ConfirmIncidentRequest, user: dict = Depends(get_current_user)):
+    """
+    Commits verified client delta into pipeline, logs audit incident, and synchronizes
+    with Client Directory.
+    """
+    uid = user.get("uid", "")
+    try:
+        result = await pipeline_service.confirm_and_commit_incident(uid=uid, data=body.model_dump())
+        return {"status": "success", "data": result}
+    except Exception as e:
+        print(f"[PipelineRouter] Error confirming incident: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to commit verified incident: {e}")
+
+
+@router.get("/directory")
+async def get_pipeline_directory_route(user: dict = Depends(get_current_user)):
+    """
+    Retrieve all client contacts stored in the Client Directory with their active pipeline stages.
+    """
+    uid = user.get("uid", "")
+    try:
+        profiles = pipeline_service.get_client_directory_profiles(uid=uid)
+        return {"status": "success", "profiles": profiles}
+    except Exception as e:
+        print(f"[PipelineRouter] Error fetching directory: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch directory profiles: {e}")
 
 
 @router.post("/incident")

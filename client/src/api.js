@@ -282,3 +282,28 @@ export async function generateClientDossier(idToken, clientId) {
     headers: { Authorization: `Bearer ${idToken}` },
   });
 }
+
+/** Preview raw update extraction before database commit */
+export async function previewPipelineIncident(idToken, text) {
+  return apiFetch('/pipeline/preview', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ text }),
+  });
+}
+
+/** Commit verified client delta and sync to directory */
+export async function confirmPipelineIncident(idToken, confirmedData) {
+  return apiFetch('/pipeline/confirm', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify(confirmedData),
+  });
+}
+
+/** Get all synced client contacts in directory */
+export async function getPipelineDirectory(idToken) {
+  return apiFetch('/pipeline/directory', {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}
