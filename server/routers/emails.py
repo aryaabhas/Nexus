@@ -14,7 +14,6 @@ from middleware.firebase_auth import get_current_user
 from pydantic import BaseModel
 from services import (
     gmail_service,
-    graph_service,
     log_service,
     openai_service,
     r2_service,
@@ -286,25 +285,6 @@ async def summarize_emails(
                 "uid":        user.get("uid", ""),
             })
 
-            # Extract graph entities & update Knowledge Graph
-            try:
-                entities = await openai_service.extract_graph_entities(
-                    subject=effective_subject,
-                    summary=summary,
-                    body=email["body"]
-                )
-                graph_service.add_email_to_graph(
-                    message_id=msg_id,
-                    subject=effective_subject,
-                    sender_raw=email["from"],
-                    date=email["date"],
-                    summary=summary,
-                    uid=user.get("uid", ""),
-                    extracted_entities=entities
-                )
-            except Exception as ge:
-                print(f"[GraphError] {ge}")
-
             log_service.add_log(
                 uid=user.get("uid", ""),
                 email=user.get("email") or "",
@@ -343,7 +323,7 @@ async def summarize_email_club(
 ):
     """
     Summarize a club/group of multiple message_ids together into a single executive summary.
-    Stores the single combined summary and maps it in the Knowledge Graph.
+    Stores the single combined summary in vector memory.
     """
     if not body.message_ids:
         raise HTTPException(status_code=400, detail="No message IDs provided to club.")
@@ -393,25 +373,6 @@ async def summarize_email_club(
         "is_clubbed": True,
         "uid": uid,
     })
-
-    # Update Knowledge Graph
-    try:
-        entities = await openai_service.extract_graph_entities(
-            subject=consolidated_subject,
-            summary=summary,
-            body="\n".join([e.get("body", "")[:300] for e in fetched_emails])
-        )
-        graph_service.add_email_to_graph(
-            message_id=club_id,
-            subject=consolidated_subject,
-            sender_raw=combined_from,
-            date=latest_date,
-            summary=summary,
-            uid=uid,
-            extracted_entities=entities
-        )
-    except Exception as ge:
-        print(f"[GraphError] {ge}")
 
     log_service.add_log(
         uid=uid,

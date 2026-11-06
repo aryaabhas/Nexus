@@ -19,18 +19,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()  # Load .env before anything else
 
-from routers import auth, crm, emails, graph, logs, pipeline, profile, search, tasks
-from services import graph_service, vector_store
+from routers import auth, crm, emails, logs, pipeline, profile, search, tasks
+from services import vector_store
 
 # ── Lifespan (startup / shutdown) ────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: pre-load FAISS index and sentence-transformer model
-    print("[Startup] Initialising vector store and embedding model…")
+    # Startup: initialize vector store connection
+    print("[Startup] Initialising vector store…")
     vector_store.load_store()
-    print("[Startup] Loading Knowledge Graph…")
-    graph_service.load_graph()
     print("[Startup] Ready.")
     yield
     # Shutdown: nothing special needed (index already saved on every write)
@@ -68,7 +66,6 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(emails.router)
 app.include_router(search.router)
-app.include_router(graph.router)
 app.include_router(logs.router)
 app.include_router(tasks.router)
 app.include_router(crm.router)

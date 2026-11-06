@@ -133,46 +133,6 @@ async def generate_subject_from_content(email_body: str, summary: str = "") -> s
         return "General Message"
 
 
-ENTITY_EXTRACTION_PROMPT = (
-    "Extract structured entities from this email to build a Knowledge Graph. "
-    "Respond ONLY with a valid JSON object matching this structure: "
-    "{\n"
-    '  "organizations": ["Company A", "Org B"],\n'
-    '  "topics": ["Project X", "Billing", "Self Care"],\n'
-    '  "action_items": ["Review document", "Call client"]\n'
-    "}\n"
-    "Limit each array to at most 3 relevant items. Keep entries short (1-4 words). "
-    "Return JSON only, no code blocks or markdown."
-)
-
-
-async def extract_graph_entities(subject: str, summary: str, body: str = "") -> dict:
-    """
-    Extract structured topics, organizations, and action items for the Knowledge Graph.
-    """
-    content_sample = f"Subject: {subject}\nSummary: {summary}\nBody: {body[:800]}"
-    client, model_name = get_llm_client_and_model()
-
-    try:
-        response = await client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": ENTITY_EXTRACTION_PROMPT},
-                {"role": "user",   "content": content_sample},
-            ],
-            max_tokens=150,
-            temperature=0.1,
-        )
-        raw_json = response.choices[0].message.content.strip()
-        if raw_json.startswith("```"):
-            raw_json = raw_json.replace("```json", "").replace("```", "").strip()
-        import json
-        return json.loads(raw_json)
-    except Exception as e:
-        print(f"[GraphExtraction] Error extracting entities: {e}")
-        return {"organizations": [], "topics": [], "action_items": []}
-
-
 CLUB_SUMMARIZE_SYSTEM_PROMPT = (
     "You are an expert email thread analyst. "
     "You are given multiple emails that belong to the same topic or thread. "
@@ -270,33 +230,6 @@ async def draft_persona_email(
     import json
     parsed = json.loads(raw_json)
     return parsed
-
-
-ASK_GRAPH_SYSTEM_PROMPT = (
-    "You are an expert Graph Intelligence Assistant for NexusOpsCRM. "
-    "You are provided with structured Knowledge Graph context (nodes, relationships, PageRank centrality scores, edge weights, and detected graph anomalies). "
-    "Analyze the graph context to directly and insightfully answer the user's natural language question. "
-    "Be concise, analytical, and actionable. Highlight specific entity names, organizations, PageRank standings, or anomaly risks where relevant."
-)
-
-
-async def query_graph_ai(user_query: str, graph_context_text: str) -> str:
-    """
-    Answer natural language queries about the Knowledge Graph structure, entities, and anomalies using the configured LLM.
-    """
-    client, model_name = get_llm_client_and_model()
-    user_content = f"Question: {user_query}\n\nKnowledge Graph Context:\n{graph_context_text}"
-
-    response = await client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": ASK_GRAPH_SYSTEM_PROMPT},
-            {"role": "user",   "content": user_content},
-        ],
-        max_tokens=350,
-        temperature=0.3,
-    )
-    return response.choices[0].message.content.strip()
 
 
 async def answer_semantic_query(query: str, search_results: list[dict]) -> str:

@@ -15,10 +15,6 @@ import {
   sendEmail,
   getSummaries,
   searchEmails,
-  getKnowledgeGraph,
-  getGraphAnalytics,
-  askGraph,
-  rebuildKnowledgeGraph,
   deleteSummary,
   getActivityLogs,
   getReplies,
@@ -36,7 +32,6 @@ import {
   getClientHistory,
   generateClientDossier,
 } from './api.js';
-import { GraphVisualizer } from './graph-visualizer.js';
 import './style.css';
 import {
   showToast,
@@ -162,14 +157,6 @@ if (datePresetFilter) {
     }
   });
 }
-const rebuildGraphBtn= document.getElementById('rebuild-graph-btn');
-const graphCanvas    = document.getElementById('graph-canvas');
-const graphInspector = document.getElementById('graph-inspector');
-const inspectorIcon  = document.getElementById('inspector-icon');
-const inspectorTitle = document.getElementById('inspector-title');
-const inspectorType  = document.getElementById('inspector-type');
-const inspectorBody  = document.getElementById('inspector-body');
-const filterCheckboxes = document.querySelectorAll('[data-filter]');
 
 // Club Action Bar DOM elements
 const clubActionBar    = document.getElementById('club-action-bar');
@@ -178,7 +165,6 @@ const selectAllBtn     = document.getElementById('select-all-btn');
 const clearSelectionBtn= document.getElementById('clear-selection-btn');
 const summarizeClubBtn = document.getElementById('summarize-club-btn');
 
-let graphVisualizer   = null;
 let selectedMessageIds = new Set();
 
 // ── Email Selection & Club Bar Handlers ────────────────────────────────────────
@@ -710,9 +696,7 @@ if (sendEmailBtn) {
 // Window Focus Listener: sync data when the user returns to the tab
 window.addEventListener('focus', () => {
   if (currentUser) {
-    console.log('[Sync] Browser window focused. Checking replies and updating graph in background...');
     checkReplies();
-    loadGraph();
   }
 });
 
@@ -724,7 +708,6 @@ if (manualSyncBtn) {
     try {
       showToast('Syncing inbox from Gmail...', 'info');
       await checkReplies();
-      await loadGraph();
       showToast('Inbox synced successfully!', 'success');
     } catch (err) {
       showToast(err.message || 'Sync failed', 'error');
@@ -786,9 +769,7 @@ tabBtns.forEach((btn) => {
     btn.classList.add('active');
     document.getElementById(`tab-${target}`).classList.add('active');
 
-    if (target === 'graph') {
-      loadGraph();
-    } else if (target === 'logs') {
+    if (target === 'logs') {
       loadActivityLogs();
     } else if (target === 'scratchpad') {
       loadScratchpadContent();
@@ -801,242 +782,6 @@ tabBtns.forEach((btn) => {
     }
   });
 });
-
-// ── Knowledge Graph logic ──────────────────────────────────────────────────────
-async function loadGraph() {
-  if (!graphCanvas) return;
-  if (!graphVisualizer) {
-    graphVisualizer = new GraphVisualizer(graphCanvas, handleNodeSelect);
-  }
-  try {
-    idToken = await currentUser.getIdToken();
-    const analytics = await getGraphAnalytics(idToken);
-    
-    // Set nodes, edges, and anomalies into force-directed visualizer engine
-    graphVisualizer.setData(analytics.nodes || [], analytics.edges || [], analytics.anomalies || []);
-
-    // Render PageRank Leaderboard
-    renderPageRankLeaderboard(analytics.top_entities || []);
-
-    // Render Risk Anomalies
-    renderGraphAnomalies(analytics.anomalies || []);
-
-  } catch (err) {
-    showToast(err.message || 'Failed to load Knowledge Graph', 'error');
-  }
-}
-
-function renderPageRankLeaderboard(topEntities) {
-  const container = document.getElementById('pagerank-leaderboard-list');
-  if (!container) return;
-
-  if (!topEntities || topEntities.length === 0) {
-    container.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">No centrality metrics calculated.</div>';
-    return;
-  }
-
-  const icons = { sender: '👤', email: '✉️', organization: '🏢', topic: '🏷️', action_item: '⚡' };
-  
-  container.innerHTML = topEntities.map((e) => {
-    const icon = icons[e.type] || '📌';
-    const percent = Math.round((e.pagerank || 0.2) * 100);
-    return `
-      <div class="pagerank-item" data-node-id="${e.id}" style="padding:8px 10px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.15s ease;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <span style="font-size:12.5px; font-weight:600; color:var(--text-primary); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:170px;">
-            ${icon} ${e.label}
-          </span>
-          <span style="font-size:11px; font-weight:700; color:var(--accent-primary);">${e.pagerank}</span>
-        </div>
-        <div style="height:4px; width:100%; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;">
-          <div style="height:100%; width:${percent}%; background:var(--accent-primary);"></div>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  container.querySelectorAll('.pagerank-item').forEach((item) => {
-    item.addEventListener('click', () => {
-      const nodeId = item.dataset.nodeId;
-      if (graphVisualizer) graphVisualizer.panToNode(nodeId);
-    });
-  });
-}
-
-function renderGraphAnomalies(anomalies) {
-  const container = document.getElementById('anomalies-list');
-  const countBadge = document.getElementById('anomalies-count-badge');
-  if (countBadge) countBadge.textContent = anomalies ? anomalies.length : 0;
-  if (!container) return;
-
-  if (!anomalies || anomalies.length === 0) {
-    container.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">No structural risks detected.</div>';
-    return;
-  }
-
-  container.innerHTML = anomalies.map((a) => {
-    const isHigh = a.severity === 'HIGH';
-    const badgeColor = isHigh ? '#ef4444' : '#f59e0b';
-    return `
-      <div class="anomaly-card" style="padding:10px; background:rgba(239, 68, 68, 0.04); border:1px solid rgba(239, 68, 68, 0.2); border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:4px;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-size:12px; font-weight:700; color:var(--text-primary); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:180px;">⚠️ ${a.title}</span>
-          <span style="font-size:9.5px; font-weight:700; background:${badgeColor}; color:#fff; padding:1px 5px; border-radius:3px;">${a.severity}</span>
-        </div>
-        <div style="font-size:11.5px; color:var(--text-secondary); line-height:1.4;">${a.description}</div>
-        <div style="display:flex; justify-content:flex-end; margin-top:4px;">
-          <button class="focus-anomaly-btn btn btn-ghost btn-sm" data-target-id="${a.target_node_id}" style="padding:2px 6px; font-size:11px; color:var(--accent-primary);">🎯 Focus in Graph</button>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  container.querySelectorAll('.focus-anomaly-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const targetId = btn.dataset.targetId;
-      if (graphVisualizer && targetId) graphVisualizer.panToNode(targetId);
-    });
-  });
-}
-
-// ── Ask the Graph AI Handlers ──────────────────────────────────────────────────
-const askGraphInput = document.getElementById('ask-graph-input');
-const askGraphBtn = document.getElementById('ask-graph-btn');
-const askGraphResponseBox = document.getElementById('ask-graph-response-box');
-const askGraphResponseText = document.getElementById('ask-graph-response-text');
-const closeAskGraphResponseBtn = document.getElementById('close-ask-graph-response-btn');
-
-async function handleAskGraph() {
-  if (!askGraphInput) return;
-  const query = askGraphInput.value.trim();
-  if (!query) {
-    showToast('Please type a question to ask the Knowledge Graph.', 'warning');
-    return;
-  }
-
-  setLoading(askGraphBtn, true, '✦ Analyzing…');
-  try {
-    idToken = await currentUser.getIdToken();
-    const res = await askGraph(query, idToken);
-
-    if (askGraphResponseBox && askGraphResponseText) {
-      askGraphResponseText.textContent = res.answer || 'No answer generated by graph AI.';
-      askGraphResponseBox.classList.remove('hidden');
-    }
-  } catch (err) {
-    showToast(err.message || 'Failed to query graph AI', 'error');
-  } finally {
-    setLoading(askGraphBtn, false, '✦ Ask AI');
-  }
-}
-
-if (askGraphBtn) askGraphBtn.addEventListener('click', handleAskGraph);
-if (askGraphInput) {
-  askGraphInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleAskGraph();
-    }
-  });
-}
-if (closeAskGraphResponseBtn && askGraphResponseBox) {
-  closeAskGraphResponseBtn.addEventListener('click', () => {
-    askGraphResponseBox.classList.add('hidden');
-  });
-}
-
-function handleNodeSelect(node) {
-  if (!node) {
-    if (graphInspector) graphInspector.classList.add('hidden');
-    return;
-  }
-  if (graphInspector) graphInspector.classList.remove('hidden');
-
-  const icons = { sender: '👤', email: '✉️', organization: '🏢', topic: '🏷️', action_item: '⚡' };
-  if (inspectorIcon) inspectorIcon.textContent = icons[node.type] || '📌';
-  if (inspectorTitle) inspectorTitle.textContent = node.label || 'Node Detail';
-  if (inspectorType) inspectorType.textContent = node.type || 'Entity';
-
-  let html = '';
-  if (node.metadata) {
-    if (node.metadata.subject) html += `<div class="inspector-field"><div class="inspector-label">Subject</div><div class="inspector-val">${node.metadata.subject}</div></div>`;
-    if (node.metadata.summary) html += `<div class="inspector-field"><div class="inspector-label">Summary</div><div class="inspector-val">${node.metadata.summary}</div></div>`;
-    if (node.metadata.date) html += `<div class="inspector-field"><div class="inspector-label">Date</div><div class="inspector-val">${node.metadata.date}</div></div>`;
-    if (node.metadata.raw) html += `<div class="inspector-field"><div class="inspector-label">Address</div><div class="inspector-val">${node.metadata.raw}</div></div>`;
-  }
-
-  // Action Item Track Completion Status
-  if (node.type === 'action_item') {
-    const isCompleted = localStorage.getItem('graph_action_completed_' + node.id) === 'true';
-    html += `
-      <div style="margin-top: 16px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);">
-        <div class="inspector-label" style="margin-bottom:8px;">Task Tracker</div>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:var(--text-primary);">
-          <input type="checkbox" id="action-item-checkbox" data-node-id="${node.id}" ${isCompleted ? 'checked' : ''} style="cursor:pointer;" />
-          <span style="user-select:none;">Mark as Completed</span>
-        </label>
-      </div>
-    `;
-  }
-
-  if (inspectorBody) {
-    inspectorBody.innerHTML = html || '<p>Node connected in graph.</p>';
-    
-    // Hook change event to save completion state
-    const chk = inspectorBody.querySelector('#action-item-checkbox');
-    if (chk) {
-      chk.addEventListener('change', (e) => {
-        localStorage.setItem('graph_action_completed_' + node.id, e.target.checked);
-        showToast(e.target.checked ? 'Action item marked as completed.' : 'Action item marked as pending.', 'success');
-      });
-    }
-  }
-}
-
-// Filter chips toggle
-filterCheckboxes.forEach((cb) => {
-  cb.addEventListener('change', (e) => {
-    const filterType = e.target.dataset.filter;
-    const parentChip = e.target.closest('.chip');
-    if (e.target.checked) parentChip?.classList.add('active');
-    else parentChip?.classList.remove('active');
-
-    if (graphVisualizer) {
-      graphVisualizer.setFilter(filterType, e.target.checked);
-    }
-  });
-});
-
-const graphSearchInput = document.getElementById('graph-search-input');
-if (graphSearchInput) {
-  graphSearchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (graphVisualizer) {
-        graphVisualizer.setSearchQuery(e.target.value.trim());
-      }
-    }
-  });
-}
-
-
-// Rebuild graph button
-if (rebuildGraphBtn) {
-  rebuildGraphBtn.addEventListener('click', async () => {
-    setLoading(rebuildGraphBtn, true, 'Rebuilding…');
-    try {
-      idToken = await currentUser.getIdToken();
-      const res = await rebuildKnowledgeGraph(idToken);
-      showToast(`Graph rebuilt with ${res.nodes_count || 0} nodes`, 'success');
-      loadGraph();
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setLoading(rebuildGraphBtn, false);
-    }
-  });
-}
-
 
 // Extract email fetching logic to a reusable function
 async function performEmailFetch(silent = false) {
@@ -3787,7 +3532,7 @@ async function loadProfiles() {
     }
   }
   
-  // Load from localStorage or fallback to Graph
+  // Load from localStorage or show dropzone
   const saved = localStorage.getItem('crm_imported_profiles');
   loadCrmSheetsHistory();
   if (saved) {

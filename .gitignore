@@ -50,6 +50,7 @@ Thumbs.db
 # Ignore all markdown files in root except the main README
 /*.md
 !/README.md
+!/Eliminated Work.md
 
 # Archives
 server.zip

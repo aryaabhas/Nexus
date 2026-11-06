@@ -164,9 +164,6 @@
               <button class="drawer-nav-item tab-btn" data-tab="search"
                 style="text-align:left; width:100%; padding:10px 16px; background:transparent; border:none; color:var(--text-secondary); cursor:pointer; font-size:13.5px; border-left:3px solid transparent;">🔍
                 Semantic Search</button>
-              <button class="drawer-nav-item tab-btn" data-tab="graph"
-                style="text-align:left; width:100%; padding:10px 16px; background:transparent; border:none; color:var(--text-secondary); cursor:pointer; font-size:13.5px; border-left:3px solid transparent;">🕸️
-                Knowledge Graph</button>
               <button class="drawer-nav-item tab-btn" data-tab="logs"
                 style="text-align:left; width:100%; padding:10px 16px; background:transparent; border:none; color:var(--text-secondary); cursor:pointer; font-size:13.5px; border-left:3px solid transparent;">📋
                 Audit Trail</button>
@@ -243,7 +240,6 @@
             <button class="tab-btn" data-tab="kanban" role="tab">📋 Operations Board</button>
             <button class="tab-btn" data-tab="summaries" role="tab">🗂 Stored Summaries</button>
             <button class="tab-btn" data-tab="search" role="tab">🔍 Semantic Search</button>
-            <button class="tab-btn" data-tab="graph" role="tab">🕸️ Knowledge Graph</button>
           </div>
           <!-- Overflow Dropdown Trigger -->
           <div class="tab-overflow-container" style="position:relative; display:inline-block; margin-left: 6px;">
@@ -538,118 +534,6 @@
             </div>
           </div>
         </div>
-
-        <!-- Tab Panel: Knowledge Graph -->
-        <div id="tab-graph" class="tab-panel" role="tabpanel">
-          <div class="panel-header">
-            <div>
-              <h2>Knowledge Graph & Analytics</h2>
-              <p>Interactive network mapping relationships between senders, organizations, topics, and action items with PageRank scoring & anomaly detection.</p>
-            </div>
-            <button id="rebuild-graph-btn" class="btn btn-secondary">
-              ↻ Rebuild Graph
-            </button>
-          </div>
-
-          <!-- "Ask the Graph" AI Query Bar -->
-          <div class="ask-graph-container" style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:12px 16px; margin-bottom:14px; display:flex; flex-direction:column; gap:10px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <div style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700; color:var(--text-primary);">
-                <span style="color:var(--accent-primary); font-size:15px;">✦</span> Ask the Graph (AI Intelligence RAG)
-              </div>
-              <span style="font-size:11.5px; color:var(--text-muted);">GPT-4o-mini Graph Reasoning Engine</span>
-            </div>
-            <div style="display:flex; gap:8px;">
-              <input type="text" id="ask-graph-input" placeholder="e.g. 'Who are our top high-risk clients?' or 'What billing bottlenecks need attention?'"
-                style="flex:1; padding:8px 12px; font-size:13px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); color:var(--text-primary); outline:none;" />
-              <button id="ask-graph-btn" class="btn btn-primary" style="padding:8px 16px; font-size:13px; min-width:100px;">
-                ✦ Ask AI
-              </button>
-            </div>
-            <!-- AI Response Box (Hidden by default) -->
-            <div id="ask-graph-response-box" class="hidden" style="background:rgba(129, 140, 248, 0.05); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:12px 16px; position:relative; margin-top:4px;">
-              <button id="close-ask-graph-response-btn" style="position:absolute; top:8px; right:12px; background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:16px;">&times;</button>
-              <div style="font-size:11px; text-transform:uppercase; font-weight:700; color:var(--accent-primary); margin-bottom:6px;">✦ AI Graph Intelligence Synthesis</div>
-              <div id="ask-graph-response-text" style="font-size:13px; color:var(--text-primary); line-height:1.6; white-space:pre-wrap;"></div>
-            </div>
-          </div>
-
-          <!-- Graph Toolbar & Filter Bar -->
-          <div class="graph-toolbar"
-            style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
-            <div class="filter-chips">
-              <label class="chip active" data-type="sender">
-                <input type="checkbox" checked data-filter="sender" /> 👤 Senders
-              </label>
-              <label class="chip active" data-type="email">
-                <input type="checkbox" checked data-filter="email" /> ✉️ Emails
-              </label>
-              <label class="chip active" data-type="organization">
-                <input type="checkbox" checked data-filter="organization" /> 🏢 Organizations
-              </label>
-              <label class="chip active" data-type="topic">
-                <input type="checkbox" checked data-filter="topic" /> 🏷️ Topics
-              </label>
-              <label class="chip active" data-type="action_item">
-                <input type="checkbox" checked data-filter="action_item" /> ⚡ Action Items
-              </label>
-            </div>
-
-            <div style="flex:1; max-width:320px; min-width:200px;">
-              <input type="text" id="graph-search-input" placeholder="🔍 Search nodes (e.g. uncompleted payment)..."
-                style="width:100%; padding:6px 12px; font-size:12.5px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); color:var(--text-primary); outline:none;" />
-            </div>
-          </div>
-
-          <!-- Graph Workspace: Canvas + Analytics Drawer + Inspector Sidebar -->
-          <div class="graph-workspace" style="display:flex; gap:16px; position:relative;">
-            <div class="canvas-container" style="flex:1; position:relative;">
-              <canvas id="graph-canvas"></canvas>
-              <div class="graph-instructions">
-                Drag nodes to rearrange • Scroll to zoom • Click node for details
-              </div>
-            </div>
-
-            <!-- Right Sidebar: PageRank Leaderboard & Anomaly Diagnostics -->
-            <div id="graph-analytics-panel" style="width:280px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:14px; display:flex; flex-direction:column; gap:14px; overflow-y:auto; max-height:550px;">
-              <!-- Section 1: PageRank Leaderboard -->
-              <div>
-                <h3 style="font-size:13px; font-weight:700; border-bottom:1px solid var(--border-subtle); padding-bottom:6px; margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between;">
-                  <span>👑 Top PageRank Entities</span>
-                  <span style="font-size:10px; font-weight:400; color:var(--text-muted);">Centrality</span>
-                </h3>
-                <div id="pagerank-leaderboard-list" style="display:flex; flex-direction:column; gap:8px;">
-                  <div style="font-size:12px; color:var(--text-muted);">Calculating centrality...</div>
-                </div>
-              </div>
-
-              <!-- Section 2: Graph Risk Anomalies -->
-              <div>
-                <h3 style="font-size:13px; font-weight:700; border-bottom:1px solid var(--border-subtle); padding-bottom:6px; margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between;">
-                  <span>⚠️ Flagged Risk Anomalies</span>
-                  <span id="anomalies-count-badge" class="badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px;">0</span>
-                </h3>
-                <div id="anomalies-list" style="display:flex; flex-direction:column; gap:8px;">
-                  <div style="font-size:12px; color:var(--text-muted);">No anomalies detected.</div>
-                </div>
-              </div>
-            </div>
-
-            <div id="graph-inspector" class="graph-inspector hidden">
-              <div class="inspector-header">
-                <div id="inspector-icon" class="inspector-icon">👤</div>
-                <div>
-                  <h3 id="inspector-title">Node Name</h3>
-                  <span id="inspector-type" class="inspector-badge">Sender</span>
-                </div>
-              </div>
-              <div id="inspector-body" class="inspector-body">
-                <p>Click any node in the Knowledge Graph to inspect its details and connections.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
 
         <!-- Tab Panel: Activity Logs -->
         <div id="tab-logs" class="tab-panel" role="tabpanel">
