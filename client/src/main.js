@@ -5358,8 +5358,12 @@ const pipelineReportModal = document.getElementById('pipeline-report-modal');
 const pipelineReportBody = document.getElementById('pipeline-report-body');
 const closePipelineReportBtn = document.getElementById('close-pipeline-report-btn');
 
-function openPipelineReportModal(markdownReport) {
+function openPipelineReportModal(markdownReport, title = 'Pipeline Intelligence Report', icon = '📊') {
   if (!pipelineReportModal || !pipelineReportBody) return;
+  const titleEl = document.getElementById('pipeline-report-title');
+  const iconEl = document.getElementById('pipeline-report-icon');
+  if (titleEl) titleEl.textContent = title;
+  if (iconEl) iconEl.textContent = icon;
   pipelineReportBody.innerHTML = renderMarkdownHtml(markdownReport);
   pipelineReportModal.classList.remove('hidden');
 }
@@ -5392,7 +5396,7 @@ async function handleRunPipelineQuery(queryText) {
   try {
     idToken = await currentUser.getIdToken();
     const res = await queryPipeline(idToken, queryText.trim());
-    openPipelineReportModal(res.markdown_report || 'No analysis generated.');
+    openPipelineReportModal(res.markdown_report || 'No analysis generated.', `Query: "${queryText}"`, '🔍');
   } catch (err) {
     showToast(err.message || 'Pipeline query failed.', 'error');
   } finally {
@@ -5421,7 +5425,7 @@ if (pipelineGenReportBtn) {
       idToken = await currentUser.getIdToken();
       const defaultQuery = 'Generate a comprehensive, executive sales stages report. State the exact total open sales and value, explicitly break down how many deals are in the final stage of closure with client names and vacation/availability alerts, highlight any blockers, and state recommended next actions.';
       const res = await queryPipeline(idToken, defaultQuery);
-      openPipelineReportModal(res.markdown_report || 'No report generated.');
+      openPipelineReportModal(res.markdown_report || 'No report generated.', 'Executive Sales Stages Report', '📊');
     } catch (err) {
       showToast(err.message || 'Failed to generate report.', 'error');
     } finally {
