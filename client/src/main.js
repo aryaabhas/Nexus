@@ -33,6 +33,8 @@ import {
   getPipelineBoard,
   queryPipeline,
   deletePipelineClient,
+  getClientHistory,
+  generateClientDossier,
 } from './api.js';
 import { GraphVisualizer } from './graph-visualizer.js';
 import './style.css';
@@ -4934,6 +4936,39 @@ if (btnGotoDocuments) {
 
 // ── Client Pipeline & Living Incident Intelligence Logic ───────────────────────
 let pipelineBoardCache = null;
+let currentHistoryClientId = null;
+let currentHistoryClientData = null;
+
+function formatHumanDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const parts = dateStr.split('-');
+      const d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    return dateStr;
+  }
+}
+
+function renderMarkdownHtml(markdownReport) {
+  if (!markdownReport) return '';
+  return markdownReport
+    .replace(/^### (.*$)/gim, '<h3 style="font-size:15px; font-weight:700; color:var(--text-primary); margin:16px 0 8px 0; border-bottom:1px solid var(--border-subtle); padding-bottom:4px;">$1</h3>')
+    .replace(/^#### (.*$)/gim, '<h4 style="font-size:13.5px; font-weight:700; color:#38bdf8; margin:12px 0 6px 0;">$1</h4>')
+    .replace(/^## (.*$)/gim, '<h2 style="font-size:17px; font-weight:800; color:var(--text-primary); margin:18px 0 10px 0;">$1</h2>')
+    .replace(/^# (.*$)/gim, '<h1 style="font-size:19px; font-weight:800; color:var(--text-primary); margin:0 0 12px 0; border-bottom: 2px solid var(--border-subtle); padding-bottom: 6px;">$1</h1>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-family:var(--font-mono); font-size:12px;">$1</code>')
+    .replace(/^\* (.*$)/gim, '<li style="margin-bottom:6px; color:var(--text-primary);">$1</li>')
+    .replace(/<\/li>\n<li/g, '</li><li')
+    .replace(/\n\n/g, '<p style="margin: 8px 0;"></p>');
+}
 
 async function loadPipelineBoard() {
   const refreshBtn = document.getElementById('pipeline-refresh-btn');
@@ -5001,12 +5036,13 @@ async function loadPipelineBoard() {
           const avail = item.availability || {};
           const isVacation = avail.status === 'ON_VACATION';
           const resumeDate = avail.resume_date || '';
+          const formattedResume = resumeDate ? formatHumanDate(resumeDate) : '';
           const blockers = item.blockers || [];
           const hasBlocker = blockers.length > 0 && blockers[0].type !== 'NONE';
 
           let statusBadgeHtml = '';
           if (isVacation) {
-            statusBadgeHtml = `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">🏖️ Away ${resumeDate ? 'till ' + escHtml(resumeDate) : ''}</span>`;
+            statusBadgeHtml = `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">🏖️ Away ${formattedResume ? 'till ' + escHtml(formattedResume) : ''}</span>`;
           } else if (hasBlocker) {
             statusBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">⚠️ ${escHtml(blockers[0].description || 'Blocker')}</span>`;
           } else {
@@ -5014,12 +5050,23 @@ async function loadPipelineBoard() {
           }
 
           const nextTask = item.next_action && item.next_action.task ? item.next_action.task : '';
+          const contacts = item.associated_contacts || [];
+          const contactsSummary = contacts.map(c => `${c.name}${c.role ? ` (${c.role})` : ''}`).slice(0, 2).join(', ');
 
           card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
               <div>
                 <h4 style="margin: 0; font-size: 13.5px; font-weight: 700; color: var(--text-primary);">${escHtml(item.company_name)}</h4>
-                <span style="font-size: 11.5px; color: var(--text-muted);">${escHtml(item.client_name)}</span>
+                <div style="font-size: 11.5px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                  <span>👤</span>
+                  <span>${escHtml(item.client_name)}</span>
+                  ${item.client_email ? `<span style="color: var(--text-secondary);">&lt;${escHtml(item.client_email)}&gt;</span>` : ''}
+                </div>
+                ${contacts.length > 1 ? `
+                  <div style="font-size: 10.5px; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <span>👥 Team: ${escHtml(contactsSummary)}</span>
+                  </div>
+                ` : ''}
               </div>
               <button class="btn-delete-pipeline-client" data-id="${item.id}" title="Remove from pipeline" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1;">&times;</button>
             </div>
@@ -5041,7 +5088,20 @@ async function loadPipelineBoard() {
                 <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escHtml(nextTask)}</span>
               </div>
             ` : ''}
+
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 2px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05);">
+              <button class="btn btn-secondary btn-sm btn-client-history" data-id="${item.id}" data-company="${escHtml(item.company_name)}" style="height: 25px; padding: 0 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; border-radius: 4px;">
+                <span>📜</span> History & Dossier
+              </button>
+              <span style="font-size: 10px; color: var(--text-muted);">${item.last_updated_at ? formatHumanDate(item.last_updated_at) : ''}</span>
+            </div>
           `;
+
+          // History & Dossier handler
+          card.querySelector('.btn-client-history')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openClientHistoryModal(item.id, item.company_name);
+          });
 
           // Delete handler
           card.querySelector('.btn-delete-pipeline-client')?.addEventListener('click', async (e) => {
@@ -5092,10 +5152,11 @@ async function handleLogIncident() {
 
     if (pipelineIncidentStatusPill) {
       pipelineIncidentStatusPill.style.display = 'block';
+      const resume = data.availability && data.availability.resume_date ? formatHumanDate(data.availability.resume_date) : '';
       pipelineIncidentStatusPill.innerHTML = `
         <span style="color: #38bdf8; font-weight: 600;">Updated:</span> ${escHtml(data.company_name)} 
         · Stage: <strong>${escHtml(data.deal_stage)}</strong>
-        ${data.availability && data.availability.status === 'ON_VACATION' ? ' · 🏖️ On Vacation' : ''}
+        ${data.availability && data.availability.status === 'ON_VACATION' ? ` · 🏖️ On Vacation ${resume ? '(till ' + escHtml(resume) + ')' : ''}` : ''}
       `;
       setTimeout(() => {
         if (pipelineIncidentStatusPill) pipelineIncidentStatusPill.style.display = 'none';
@@ -5133,19 +5194,7 @@ const closePipelineReportBtn = document.getElementById('close-pipeline-report-bt
 
 function openPipelineReportModal(markdownReport) {
   if (!pipelineReportModal || !pipelineReportBody) return;
-  // Convert markdown to clean styled HTML
-  let formattedHtml = markdownReport
-    .replace(/^### (.*$)/gim, '<h3 style="font-size:16px; font-weight:700; color:var(--text-primary); margin:18px 0 8px 0; border-bottom:1px solid var(--border-subtle); padding-bottom:6px;">$1</h3>')
-    .replace(/^#### (.*$)/gim, '<h4 style="font-size:14.5px; font-weight:700; color:#38bdf8; margin:14px 0 6px 0;">$1</h4>')
-    .replace(/^# (.*$)/gim, '<h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px 0;">$1</h2>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-family:var(--font-mono); font-size:12px;">$1</code>')
-    .replace(/^\* (.*$)/gim, '<li style="margin-bottom:6px; color:var(--text-primary);">$1</li>')
-    .replace(/<\/li>\n<li/g, '</li><li')
-    .replace(/\n\n/g, '<p style="margin: 8px 0;"></p>');
-
-  pipelineReportBody.innerHTML = formattedHtml;
+  pipelineReportBody.innerHTML = renderMarkdownHtml(markdownReport);
   pipelineReportModal.classList.remove('hidden');
 }
 
@@ -5211,6 +5260,198 @@ if (pipelineGenReportBtn) {
       showToast(err.message || 'Failed to generate report.', 'error');
     } finally {
       setLoading(pipelineGenReportBtn, false, '📊 Generate Sales Stages Report');
+    }
+  });
+}
+
+// ── Client Discussion History & Closure Dossier Modal Logic ───────────────────
+const clientHistoryModal = document.getElementById('client-history-modal');
+const clientHistoryTitle = document.getElementById('client-history-title');
+const clientHistorySubtitle = document.getElementById('client-history-subtitle');
+const clientHistoryBody = document.getElementById('client-history-body');
+const closeClientHistoryBtn = document.getElementById('close-client-history-btn');
+const generateClientDossierBtn = document.getElementById('generate-client-dossier-btn');
+
+function closeClientHistoryModal() {
+  if (clientHistoryModal) clientHistoryModal.classList.add('hidden');
+  currentHistoryClientId = null;
+  currentHistoryClientData = null;
+}
+
+if (closeClientHistoryBtn) {
+  closeClientHistoryBtn.addEventListener('click', closeClientHistoryModal);
+}
+if (clientHistoryModal) {
+  clientHistoryModal.addEventListener('click', (e) => {
+    if (e.target === clientHistoryModal) closeClientHistoryModal();
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && clientHistoryModal && !clientHistoryModal.classList.contains('hidden')) {
+    closeClientHistoryModal();
+  }
+});
+
+function renderTimelineView(clientInfo, incidents) {
+  if (!clientHistoryBody) return;
+
+  const stage = clientInfo.deal_stage || 'DISCOVERY';
+  const val = clientInfo.deal_value ? '$' + Number(clientInfo.deal_value).toLocaleString() : 'Not Set';
+  const avail = clientInfo.availability || {};
+  const isVacation = avail.status === 'ON_VACATION';
+  const resume = avail.resume_date ? formatHumanDate(avail.resume_date) : '';
+  const contacts = clientInfo.associated_contacts || [];
+
+  let headerHtml = `
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px;">
+      <div>
+        <div style="font-size: 16px; font-weight: 700; color: var(--text-primary);">${escHtml(clientInfo.company_name)}</div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px;">
+          Primary Contact: <strong style="color: var(--text-primary);">${escHtml(clientInfo.client_name)}</strong> 
+          ${clientInfo.client_email ? `&lt;${escHtml(clientInfo.client_email)}&gt;` : ''}
+        </div>
+        ${contacts.length > 0 ? `
+          <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+            👥 Associated: ${escHtml(contacts.map(c => `${c.name} (${c.role || 'Contact'})`).join(', '))}
+          </div>
+        ` : ''}
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="text-align: right;">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Stage / Value</div>
+          <div style="font-size: 13.5px; font-weight: 700; color: #10b981;">
+            <span style="color: #38bdf8; font-weight: 600;">${escHtml(stage)}</span> · ${val}
+          </div>
+        </div>
+        <div>
+          ${isVacation 
+            ? `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700;">🏖️ Away till ${escHtml(resume || 'TBD')}</span>`
+            : `<span style="background: rgba(52, 211, 153, 0.1); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.25); padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">🟢 Active</span>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (!incidents || incidents.length === 0) {
+    clientHistoryBody.innerHTML = `
+      ${headerHtml}
+      <div style="padding: 40px 20px; text-align: center; color: var(--text-muted);">
+        <div style="font-size: 32px; margin-bottom: 8px;">📭</div>
+        <div style="font-size: 13.5px; font-weight: 600;">No incident or discussion updates logged yet.</div>
+        <div style="font-size: 12px; margin-top: 4px;">Log an update in the Client Pipeline input bar to start tracking.</div>
+      </div>
+    `;
+    return;
+  }
+
+  let timelineHtml = `
+    ${headerHtml}
+    <div style="position: relative; padding-left: 20px; border-left: 2px solid var(--border-subtle); display: flex; flex-direction: column; gap: 18px; margin-left: 10px;">
+  `;
+
+  incidents.forEach((inc, index) => {
+    const timeFormatted = inc.timestamp ? formatHumanDate(inc.timestamp) : 'Recent';
+    const ext = inc.extracted_state || {};
+    const incAvail = ext.availability || {};
+    const incVacation = incAvail.status === 'ON_VACATION';
+    const incResume = incAvail.resume_date ? formatHumanDate(incAvail.resume_date) : '';
+    const incNext = ext.next_action && ext.next_action.task ? ext.next_action.task : '';
+
+    timelineHtml += `
+      <div style="position: relative;">
+        <!-- Timeline node bullet -->
+        <div style="position: absolute; left: -27px; top: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent-primary); border: 2px solid var(--bg-surface); box-shadow: 0 0 0 2px var(--border-subtle);"></div>
+
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <div style="font-size: 12px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
+              <span>Update #${index + 1}</span>
+              ${incVacation ? `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; padding: 1px 6px; border-radius: 3px; font-size: 10px;">🏖️ Vacation (till ${escHtml(incResume)})</span>` : ''}
+              ${ext.deal_stage ? `<span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 1px 6px; border-radius: 3px; font-size: 10px;">${escHtml(ext.deal_stage)}</span>` : ''}
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted);">${escHtml(timeFormatted)}</div>
+          </div>
+
+          <div style="font-size: 13px; color: var(--text-primary); font-style: italic; background: rgba(0,0,0,0.15); padding: 8px 10px; border-radius: 6px; border-left: 2px solid var(--accent-primary); margin-bottom: 8px;">
+            "${escHtml(inc.raw_text)}"
+          </div>
+
+          ${inc.summary ? `
+            <div style="font-size: 11.5px; color: var(--text-secondary); line-height: 1.4;">
+              <strong style="color: var(--text-primary);">Summary:</strong> ${escHtml(inc.summary)}
+            </div>
+          ` : ''}
+
+          ${incNext ? `
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 6px;">
+              <strong style="color: var(--text-primary);">Next Step:</strong> ${escHtml(incNext)}
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  timelineHtml += `</div>`;
+  clientHistoryBody.innerHTML = timelineHtml;
+}
+
+async function openClientHistoryModal(clientId, companyName) {
+  if (!clientHistoryModal || !clientHistoryBody) return;
+  currentHistoryClientId = clientId;
+
+  if (clientHistoryTitle) clientHistoryTitle.textContent = `${companyName} — Discussion History`;
+  if (clientHistorySubtitle) clientHistorySubtitle.textContent = 'Fetching chronological timeline…';
+  clientHistoryBody.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--text-muted);">Fetching client discussion history…</div>`;
+  clientHistoryModal.classList.remove('hidden');
+
+  try {
+    idToken = await currentUser.getIdToken();
+    const res = await getClientHistory(idToken, clientId);
+    currentHistoryClientData = res;
+    if (clientHistorySubtitle) clientHistorySubtitle.textContent = `${(res.incidents || []).length} logged discussion update(s) & incidents`;
+    renderTimelineView(res.client || { company_name: companyName }, res.incidents || []);
+  } catch (err) {
+    clientHistoryBody.innerHTML = `<div style="padding: 30px; color: #ef4444; text-align: center;">Error loading history: ${escHtml(err.message || 'Unknown error')}</div>`;
+  }
+}
+
+if (generateClientDossierBtn) {
+  generateClientDossierBtn.addEventListener('click', async () => {
+    if (!currentHistoryClientId) {
+      showToast('No active client selected.', 'warning');
+      return;
+    }
+
+    setLoading(generateClientDossierBtn, true, 'Synthesizing…');
+    try {
+      idToken = await currentUser.getIdToken();
+      const dossier = await generateClientDossier(idToken, currentHistoryClientId);
+      
+      if (clientHistoryBody && dossier.markdown_report) {
+        let dossierHtml = `
+          <div style="margin-bottom: 14px; display: flex; justify-content: flex-end;">
+            <button id="back-to-timeline-btn" class="btn btn-secondary btn-sm" style="font-size: 11.5px; padding: 4px 10px;">
+              ← Back to Updates Timeline
+            </button>
+          </div>
+          <div class="dossier-content" style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 20px;">
+            ${renderMarkdownHtml(dossier.markdown_report)}
+          </div>
+        `;
+        clientHistoryBody.innerHTML = dossierHtml;
+
+        document.getElementById('back-to-timeline-btn')?.addEventListener('click', () => {
+          if (currentHistoryClientData) {
+            renderTimelineView(currentHistoryClientData.client || {}, currentHistoryClientData.incidents || []);
+          }
+        });
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to generate deal dossier.', 'error');
+    } finally {
+      setLoading(generateClientDossierBtn, false, '📄 Generate Deal Dossier');
     }
   });
 }

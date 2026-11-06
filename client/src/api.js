@@ -299,3 +299,18 @@ export async function deletePipelineClient(idToken, clientId) {
     headers: { Authorization: `Bearer ${idToken}` },
   });
 }
+
+/** Get chronological history of updates & discussions for a specific client */
+export async function getClientHistory(idToken, clientId) {
+  return apiFetch(`/pipeline/client/${clientId}/history`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}
+
+/** Generate a detailed post-closure or deal dossier report for a specific client */
+export async function generateClientDossier(idToken, clientId) {
+  return apiFetch(`/pipeline/client/${clientId}/dossier`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}

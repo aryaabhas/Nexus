@@ -1,7 +1,8 @@
 """
 Router for Client Pipeline & Living Incident Intelligence.
 Endpoints for logging natural language incidents, fetching Kanban board data,
-and generating analytical sales stage reports.
+generating analytical sales stage reports, viewing client discussion history,
+and generating post-closure deal dossiers.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -70,6 +71,42 @@ async def query_pipeline_route(body: QueryRequest, user: dict = Depends(get_curr
     except Exception as e:
         print(f"[PipelineRouter] Error running pipeline query: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate sales report: {e}")
+
+
+@router.get("/client/{client_id}/history")
+async def get_client_history_route(client_id: str, user: dict = Depends(get_current_user)):
+    """
+    Fetch the complete chronological history of discussions and incident updates
+    for a specific client or company.
+    """
+    uid = user.get("uid", "")
+    try:
+        data = pipeline_service.get_client_history(uid=uid, client_id_or_company=client_id)
+        if not data.get("client"):
+            raise HTTPException(status_code=404, detail="Client not found in pipeline.")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[PipelineRouter] Error fetching client history: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch client history: {e}")
+
+
+@router.post("/client/{client_id}/dossier")
+async def generate_client_dossier_route(client_id: str, user: dict = Depends(get_current_user)):
+    """
+    Generate an executive, board-ready Client Deal Dossier & Post-Closure Sales Report
+    synthesizing all discussions, timeline of events, agreements, and final terms.
+    """
+    uid = user.get("uid", "")
+    try:
+        dossier = await pipeline_service.generate_client_closure_dossier(uid=uid, client_id_or_company=client_id)
+        return dossier
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        print(f"[PipelineRouter] Error generating deal dossier: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate deal dossier: {e}")
 
 
 @router.delete("/client/{client_id}")
