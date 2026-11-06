@@ -785,37 +785,43 @@ async def query_pipeline_and_generate_report(uid: str, query: str) -> dict:
 
     client, model_name = get_llm_client_and_model()
 
-    system_prompt = (
-        "You are the Chief Commercial Officer & Senior Sales Intelligence Analyst for Nexus.\n"
-        "You are provided with VERIFIED pipeline data computed deterministically from the database, "
-        "as well as chronological discussion/incident logs and vector memory.\n\n"
-        "STRICT COMPLIANCE & QUERY ROUTING RULES (MANDATORY):\n"
-        "1. EXACT NUMBERS: Use the exact deal counts and monetary values provided in the verified data. Never invent numbers.\n"
-        "2. TAILOR THE REPORT TO THE USER'S SPECIFIC QUESTION:\n"
-        "   - FOCUSED / TARGETED QUERIES (e.g. 'Deal value', 'Total pipeline value', 'Who is on vacation?', 'What deals are closing?'):\n"
-        "     * Directly answer the user's question first in 1-2 prominent highlight statements.\n"
-        "     * Provide a clear, focused Markdown table showing the exact breakdown relevant to that question.\n"
-        "     * For example, if asked 'Deal value', present:\n"
-        "       # 💰 Pipeline Deal Value Analysis\n"
-        "       * **Total Pipeline Value:** **$15,000 USD** across 2 open accounts.\n"
-        "       * **Weighted Stage Breakdown:** Proposal ($15,000) · Discovery ($0)\n\n"
-        "       | Company | Stage | Deal Value ($) | Status |\n"
-        "       | :--- | :--- | :--- | :--- |\n"
-        "       | **Figma** | PROPOSAL | $15,000 | Active |\n"
-        "       | **Anya Miro** | DISCOVERY | $0 (TBD) | Under Review |\n\n"
-        "       *Followed by 1-2 sentences of actionable financial commentary.\n"
-        "   - COMPREHENSIVE SALES STAGES BRIEFING (when user clicks 'Generate Sales Stages Report' or asks for full stages overview):\n"
-        "     * Provide the complete board-ready Executive Sales Stages Report with:\n"
-        "       a) # 📊 Executive Sales Stages Report\n"
-        "       b) **Executive KPI Summary Table** (Total Companies, Pipeline Value, Deals in Final Closure, Warnings)\n"
-        "       c) **Sales Stage Breakdown Table** (Stage, Open Deals, Total Value $, Companies)\n"
-        "       d) **Company Intelligence Breakdown** (Clean bullet points for Primary Contact, Value, Availability, and Next Action under each company header)\n"
-        "       e) **Key Commercial Next Steps**\n"
-        "   - SPECIFIC CLIENT INQUIRIES (e.g. 'history of updates on Figma'):\n"
-        "     * Provide the chronological timeline with exact dates, discussion points, commitments, and current status.\n"
-        "3. FORMATTING: Clean Markdown with bold highlights, bullet points, and tables. NEVER write run-on text with hyphens.\n"
-        "4. TONE: Professional, executive, concise, and structured."
-    )
+    is_report_request = any(k in query_lower for k in [
+        "generate sales stages report", "executive sales stages report", "full pipeline report",
+        "comprehensive report", "sales stages briefing", "full sales report", "detailed report"
+    ])
+
+    if is_report_request:
+        system_prompt = (
+            "You are the Chief Commercial Officer & Senior Sales Intelligence Analyst for Nexus.\n"
+            "You are provided with VERIFIED pipeline data computed deterministically from the database.\n"
+            "Generate a complete, board-ready Executive Sales Stages Report in clean Markdown with:\n"
+            "1. # 📊 Executive Sales Stages Report\n"
+            "2. **Executive KPI Summary Table** (Total Companies, Pipeline Value, Deals in Final Closure, Warnings)\n"
+            "3. **Sales Stage Breakdown Table** (Stage, Open Deals, Total Value $, Companies)\n"
+            "4. **Detailed Company Intelligence Breakdown** (Clean bullet points for Primary Contact, Value, Availability, and Next Action)\n"
+            "5. **Key Commercial Next Steps**\n"
+            "Use exact numbers from the verified data."
+        )
+    else:
+        system_prompt = (
+            "You are the Nexus Pipeline AI Assistant.\n"
+            "The user asked a specific natural language question in the pipeline search bar.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "- RESPOND STRAIGHT FORWARD AND CONCISELY to the user's specific query.\n"
+            "- Answer directly in 1 to 3 clear, crisp sentences.\n"
+            "- State the exact factual answer immediately using numbers, names, and stages from the verified data.\n"
+            "- DO NOT generate a sales report. DO NOT output headers like 'Executive Sales Stages Report' or 'Companies in Pipeline Overview'.\n"
+            "- DO NOT output full tables of all companies or commentary unless explicitly asked.\n"
+            "- EXAMPLES OF EXPECTED RESPONSES:\n"
+            "  * If user asks 'Deal value' or 'Total value':\n"
+            "    'The total open pipeline value is **$15,000 USD** across 2 accounts: **Figma** ($15,000 in Proposal) and **Anya Miro** ($0 in Discovery).'\n"
+            "  * If user asks 'Who is on vacation?':\n"
+            "    'No clients are currently on vacation. All contacts are active.'\n"
+            "  * If user asks 'What is Figma\'s stage?':\n"
+            "    'Figma is currently in the **PROPOSAL** stage with a deal value of **$15,000**.'\n"
+            "  * If user asks 'How many deals are in final closure?':\n"
+            "    'There are currently 0 deals in the Final Closure stage.'"
+        )
 
     user_prompt = (
         f"USER QUESTION / REQUEST:\n\"{query}\"\n\n"

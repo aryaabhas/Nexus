@@ -5386,17 +5386,34 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+const pipelineQueryInlineAnswer = document.getElementById('pipeline-query-inline-answer');
+const pipelineQueryAnswerText = document.getElementById('pipeline-query-answer-text');
+const closeInlineAnswerBtn = document.getElementById('close-inline-answer-btn');
+
+if (closeInlineAnswerBtn) {
+  closeInlineAnswerBtn.addEventListener('click', () => {
+    if (pipelineQueryInlineAnswer) pipelineQueryInlineAnswer.style.display = 'none';
+  });
+}
+
 async function handleRunPipelineQuery(queryText) {
   if (!queryText || !queryText.trim()) {
     showToast('Please type a query to ask Pipeline AI.', 'warning');
     return;
   }
 
-  setLoading(pipelineRunQueryBtn, true, 'Analyzing…');
+  setLoading(pipelineRunQueryBtn, true, 'Answering…');
   try {
     idToken = await currentUser.getIdToken();
     const res = await queryPipeline(idToken, queryText.trim());
-    openPipelineReportModal(res.markdown_report || 'No analysis generated.', `Query: "${queryText}"`, '🔍');
+    const answer = res.markdown_report || 'No answer generated.';
+
+    if (pipelineQueryInlineAnswer && pipelineQueryAnswerText) {
+      pipelineQueryAnswerText.innerHTML = renderMarkdownHtml(answer);
+      pipelineQueryInlineAnswer.style.display = 'block';
+    } else {
+      openPipelineReportModal(answer, `Answer: "${queryText}"`, '💡');
+    }
   } catch (err) {
     showToast(err.message || 'Pipeline query failed.', 'error');
   } finally {
