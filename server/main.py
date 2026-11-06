@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()  # Load .env before anything else
 
-from routers import auth, crm, emails, graph, logs, profile, search, tasks
+from routers import auth, crm, emails, graph, logs, pipeline, profile, search, tasks
 from services import graph_service, vector_store
 
 # ── Lifespan (startup / shutdown) ────────────────────────────────────────────
@@ -72,6 +72,7 @@ app.include_router(graph.router)
 app.include_router(logs.router)
 app.include_router(tasks.router)
 app.include_router(crm.router)
+app.include_router(pipeline.router)
 app.include_router(profile.router)
 
 

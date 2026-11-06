@@ -266,3 +266,36 @@ export async function syncR2InboxAttachments(oauthToken, idToken, maxEmails = 30
     body: JSON.stringify({ oauth_token: oauthToken, max_emails: maxEmails }),
   });
 }
+
+/** Log an unstructured natural language client incident */
+export async function logPipelineIncident(idToken, text) {
+  return apiFetch('/pipeline/incident', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ text }),
+  });
+}
+
+/** Fetch full pipeline board (stages, clients, metrics) */
+export async function getPipelineBoard(idToken) {
+  return apiFetch('/pipeline/board', {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}
+
+/** Execute analytical sales query or generate executive pipeline report */
+export async function queryPipeline(idToken, query) {
+  return apiFetch('/pipeline/query', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ query }),
+  });
+}
+
+/** Delete client from pipeline */
+export async function deletePipelineClient(idToken, clientId) {
+  return apiFetch(`/pipeline/client/${clientId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+}

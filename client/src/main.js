@@ -29,6 +29,10 @@ import {
   getR2Documents,
   deleteR2Document,
   syncR2InboxAttachments,
+  logPipelineIncident,
+  getPipelineBoard,
+  queryPipeline,
+  deletePipelineClient,
 } from './api.js';
 import { GraphVisualizer } from './graph-visualizer.js';
 import './style.css';
@@ -790,6 +794,8 @@ tabBtns.forEach((btn) => {
       loadProfiles();
     } else if (target === 'kanban') {
       loadKanbanBoard();
+    } else if (target === 'pipeline') {
+      loadPipelineBoard();
     }
   });
 });
@@ -4924,3 +4930,294 @@ if (btnGotoDocuments) {
 
 
 
+
+
+// ── Client Pipeline & Living Incident Intelligence Logic ───────────────────────
+let pipelineBoardCache = null;
+
+async function loadPipelineBoard() {
+  const refreshBtn = document.getElementById('pipeline-refresh-btn');
+  if (refreshBtn) setLoading(refreshBtn, true, 'Loading…');
+
+  try {
+    idToken = await currentUser.getIdToken();
+    const data = await getPipelineBoard(idToken);
+    pipelineBoardCache = data;
+
+    const metrics = data.metrics || {};
+    const columns = data.columns || {};
+
+    // 1. Update metric counter cards
+    const metricDeals = document.getElementById('pipeline-metric-deals');
+    const metricValue = document.getElementById('pipeline-metric-value');
+    const metricFinal = document.getElementById('pipeline-metric-final');
+    const metricFlags = document.getElementById('pipeline-metric-flags');
+
+    if (metricDeals) metricDeals.textContent = metrics.total_open_deals || 0;
+    if (metricValue) {
+      const val = metrics.total_pipeline_value || 0;
+      metricValue.textContent = '$' + Number(val).toLocaleString();
+    }
+    if (metricFinal) {
+      const finalCount = (metrics.stage_counts && metrics.stage_counts.FINAL_CLOSURE) || 0;
+      metricFinal.textContent = finalCount;
+    }
+    if (metricFlags) {
+      let flagsCount = 0;
+      Object.values(columns).forEach(col => {
+        col.forEach(c => {
+          if ((c.availability && c.availability.status === 'ON_VACATION') || (c.blockers && c.blockers.length > 0)) {
+            flagsCount++;
+          }
+        });
+      });
+      metricFlags.textContent = flagsCount;
+    }
+
+    // 2. Render Kanban Stage Columns
+    const stageKeys = ['DISCOVERY', 'PROPOSAL', 'NEGOTIATION', 'FINAL_CLOSURE', 'CLOSED_WON'];
+    stageKeys.forEach(stage => {
+      const containerId = 'pipeline-col-' + stage.toLowerCase();
+      const countElId = 'count-' + stage;
+      const container = document.getElementById(containerId);
+      const countEl = document.getElementById(countElId);
+
+      const items = columns[stage] || [];
+      if (countEl) countEl.textContent = items.length;
+
+      if (container) {
+        container.innerHTML = '';
+        if (items.length === 0) {
+          container.innerHTML = `<div class="empty-state" style="padding: 24px 8px; font-size: 11.5px; color: var(--text-muted); text-align: center;">No deals in ${stage.replace('_', ' ')}</div>`;
+          return;
+        }
+
+        items.forEach(item => {
+          const card = document.createElement('div');
+          card.className = 'glass-card pipeline-card';
+          card.style.cssText = 'padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 8px; background: rgba(255,255,255,0.02); display: flex; flex-direction: column; gap: 8px; position: relative;';
+
+          const val = item.deal_value ? '$' + Number(item.deal_value).toLocaleString() : '';
+          const avail = item.availability || {};
+          const isVacation = avail.status === 'ON_VACATION';
+          const resumeDate = avail.resume_date || '';
+          const blockers = item.blockers || [];
+          const hasBlocker = blockers.length > 0 && blockers[0].type !== 'NONE';
+
+          let statusBadgeHtml = '';
+          if (isVacation) {
+            statusBadgeHtml = `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">🏖️ Away ${resumeDate ? 'till ' + escHtml(resumeDate) : ''}</span>`;
+          } else if (hasBlocker) {
+            statusBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">⚠️ ${escHtml(blockers[0].description || 'Blocker')}</span>`;
+          } else {
+            statusBadgeHtml = `<span style="background: rgba(52, 211, 153, 0.1); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.25); padding: 2px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600;">🟢 Active</span>`;
+          }
+
+          const nextTask = item.next_action && item.next_action.task ? item.next_action.task : '';
+
+          card.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+              <div>
+                <h4 style="margin: 0; font-size: 13.5px; font-weight: 700; color: var(--text-primary);">${escHtml(item.company_name)}</h4>
+                <span style="font-size: 11.5px; color: var(--text-muted);">${escHtml(item.client_name)}</span>
+              </div>
+              <button class="btn-delete-pipeline-client" data-id="${item.id}" title="Remove from pipeline" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1;">&times;</button>
+            </div>
+
+            <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px;">
+              ${val ? `<span style="font-size: 13px; font-weight: 800; color: #10b981;">${val}</span>` : '<span></span>'}
+              ${statusBadgeHtml}
+            </div>
+
+            ${item.last_incident_summary ? `
+              <p style="font-size: 11.5px; line-height: 1.4; color: var(--text-secondary); margin: 0; background: rgba(0,0,0,0.18); padding: 6px 8px; border-radius: 4px; border-left: 2px solid var(--accent-primary);">
+                ${escHtml(item.last_incident_summary)}
+              </p>
+            ` : ''}
+
+            ${nextTask ? `
+              <div style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted);">
+                <span style="font-weight: 700; color: var(--text-primary);">Next:</span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escHtml(nextTask)}</span>
+              </div>
+            ` : ''}
+          `;
+
+          // Delete handler
+          card.querySelector('.btn-delete-pipeline-client')?.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Delete ${item.company_name} from pipeline?`)) return;
+            try {
+              idToken = await currentUser.getIdToken();
+              await deletePipelineClient(idToken, item.id);
+              showToast(`${item.company_name} removed from pipeline.`, 'success');
+              loadPipelineBoard();
+            } catch (delErr) {
+              showToast(delErr.message || 'Delete failed', 'error');
+            }
+          });
+
+          container.appendChild(card);
+        });
+      }
+    });
+
+  } catch (err) {
+    showToast(err.message || 'Failed to load pipeline board.', 'error');
+  } finally {
+    if (refreshBtn) setLoading(refreshBtn, false, '🔄 Refresh');
+  }
+}
+
+// Pipeline Incident Logger
+const pipelineIncidentInput = document.getElementById('pipeline-incident-input');
+const pipelineLogIncidentBtn = document.getElementById('pipeline-log-incident-btn');
+const pipelineIncidentStatusPill = document.getElementById('pipeline-incident-status-pill');
+
+async function handleLogIncident() {
+  const text = pipelineIncidentInput?.value.trim();
+  if (!text) {
+    showToast('Please type an incident or update before submitting.', 'warning');
+    return;
+  }
+
+  setLoading(pipelineLogIncidentBtn, true, 'Processing…');
+  try {
+    idToken = await currentUser.getIdToken();
+    const res = await logPipelineIncident(idToken, text);
+    const data = res.data || {};
+    
+    showToast(`✓ Updated pipeline for ${data.company_name || 'Client'}!`, 'success');
+    if (pipelineIncidentInput) pipelineIncidentInput.value = '';
+
+    if (pipelineIncidentStatusPill) {
+      pipelineIncidentStatusPill.style.display = 'block';
+      pipelineIncidentStatusPill.innerHTML = `
+        <span style="color: #38bdf8; font-weight: 600;">Updated:</span> ${escHtml(data.company_name)} 
+        · Stage: <strong>${escHtml(data.deal_stage)}</strong>
+        ${data.availability && data.availability.status === 'ON_VACATION' ? ' · 🏖️ On Vacation' : ''}
+      `;
+      setTimeout(() => {
+        if (pipelineIncidentStatusPill) pipelineIncidentStatusPill.style.display = 'none';
+      }, 7000);
+    }
+
+    // Refresh board in real-time
+    await loadPipelineBoard();
+  } catch (err) {
+    showToast(err.message || 'Failed to log incident.', 'error');
+  } finally {
+    setLoading(pipelineLogIncidentBtn, false, 'Log Update');
+  }
+}
+
+if (pipelineLogIncidentBtn) {
+  pipelineLogIncidentBtn.addEventListener('click', handleLogIncident);
+}
+if (pipelineIncidentInput) {
+  pipelineIncidentInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleLogIncident();
+    }
+  });
+}
+
+// Pipeline Query & Report Modal
+const pipelineQueryInput = document.getElementById('pipeline-query-input');
+const pipelineRunQueryBtn = document.getElementById('pipeline-run-query-btn');
+const pipelineGenReportBtn = document.getElementById('pipeline-gen-report-btn');
+const pipelineReportModal = document.getElementById('pipeline-report-modal');
+const pipelineReportBody = document.getElementById('pipeline-report-body');
+const closePipelineReportBtn = document.getElementById('close-pipeline-report-btn');
+
+function openPipelineReportModal(markdownReport) {
+  if (!pipelineReportModal || !pipelineReportBody) return;
+  // Convert markdown to clean styled HTML
+  let formattedHtml = markdownReport
+    .replace(/^### (.*$)/gim, '<h3 style="font-size:16px; font-weight:700; color:var(--text-primary); margin:18px 0 8px 0; border-bottom:1px solid var(--border-subtle); padding-bottom:6px;">$1</h3>')
+    .replace(/^#### (.*$)/gim, '<h4 style="font-size:14.5px; font-weight:700; color:#38bdf8; margin:14px 0 6px 0;">$1</h4>')
+    .replace(/^# (.*$)/gim, '<h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px 0;">$1</h2>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-family:var(--font-mono); font-size:12px;">$1</code>')
+    .replace(/^\* (.*$)/gim, '<li style="margin-bottom:6px; color:var(--text-primary);">$1</li>')
+    .replace(/<\/li>\n<li/g, '</li><li')
+    .replace(/\n\n/g, '<p style="margin: 8px 0;"></p>');
+
+  pipelineReportBody.innerHTML = formattedHtml;
+  pipelineReportModal.classList.remove('hidden');
+}
+
+function closePipelineReportModal() {
+  if (pipelineReportModal) pipelineReportModal.classList.add('hidden');
+}
+
+if (closePipelineReportBtn) {
+  closePipelineReportBtn.addEventListener('click', closePipelineReportModal);
+}
+if (pipelineReportModal) {
+  pipelineReportModal.addEventListener('click', (e) => {
+    if (e.target === pipelineReportModal) closePipelineReportModal();
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && pipelineReportModal && !pipelineReportModal.classList.contains('hidden')) {
+    closePipelineReportModal();
+  }
+});
+
+async function handleRunPipelineQuery(queryText) {
+  if (!queryText || !queryText.trim()) {
+    showToast('Please type a query to ask Pipeline AI.', 'warning');
+    return;
+  }
+
+  setLoading(pipelineRunQueryBtn, true, 'Analyzing…');
+  try {
+    idToken = await currentUser.getIdToken();
+    const res = await queryPipeline(idToken, queryText.trim());
+    openPipelineReportModal(res.markdown_report || 'No analysis generated.');
+  } catch (err) {
+    showToast(err.message || 'Pipeline query failed.', 'error');
+  } finally {
+    setLoading(pipelineRunQueryBtn, false, 'Ask AI');
+  }
+}
+
+if (pipelineRunQueryBtn) {
+  pipelineRunQueryBtn.addEventListener('click', () => {
+    handleRunPipelineQuery(pipelineQueryInput?.value.trim());
+  });
+}
+if (pipelineQueryInput) {
+  pipelineQueryInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleRunPipelineQuery(pipelineQueryInput.value.trim());
+    }
+  });
+}
+
+if (pipelineGenReportBtn) {
+  pipelineGenReportBtn.addEventListener('click', async () => {
+    setLoading(pipelineGenReportBtn, true, 'Generating Briefing…');
+    try {
+      idToken = await currentUser.getIdToken();
+      const defaultQuery = 'Generate a comprehensive, executive sales stages report. State the exact total open sales and value, explicitly break down how many deals are in the final stage of closure with client names and vacation/availability alerts, highlight any blockers, and state recommended next actions.';
+      const res = await queryPipeline(idToken, defaultQuery);
+      openPipelineReportModal(res.markdown_report || 'No report generated.');
+    } catch (err) {
+      showToast(err.message || 'Failed to generate report.', 'error');
+    } finally {
+      setLoading(pipelineGenReportBtn, false, '📊 Generate Sales Stages Report');
+    }
+  });
+}
+
+const pipelineRefreshBtn = document.getElementById('pipeline-refresh-btn');
+if (pipelineRefreshBtn) {
+  pipelineRefreshBtn.addEventListener('click', () => {
+    loadPipelineBoard();
+  });
+}
